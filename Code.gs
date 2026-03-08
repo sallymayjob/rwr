@@ -6,8 +6,9 @@ function doPost(e) {
   // Slack URL verification must return plain challenge text immediately.
   // In Apps Script, signature headers are not always exposed in e.parameter/e.parameters,
   // so we resolve challenge before strict signature validation to avoid setup deadlocks.
-  if (body.type === 'url_verification') {
-    return ContentService.createTextOutput(String(body.challenge || '')).setMimeType(ContentService.MimeType.TEXT);
+  const challenge = (body && body.challenge) || (e && e.parameter && e.parameter.challenge) || '';
+  if (body.type === 'url_verification' || (challenge && !body.command && !body.event)) {
+    return ContentService.createTextOutput(String(challenge)).setMimeType(ContentService.MimeType.TEXT);
   }
 
   if (!validateSlackRequest(e)) {
@@ -142,7 +143,15 @@ function setupTrigger() {
 function parseIncomingBody(raw, type) {
   let body = {};
   try {
-    if (type.indexOf('application/json') !== -1) {
+    const txt = String(raw || '').trim();
+
+    // Prefer JSON parsing when body looks like JSON, regardless of content type.
+    if (txt && (txt[0] === '{' || txt[0] === '[')) {
+      body = JSON.parse(txt);
+      return body || {};
+    }
+
+    if (String(type || '').indexOf('application/json') !== -1) {
       body = JSON.parse(raw || '{}');
     } else {
       const parsed = parseFormEncoded(raw);
