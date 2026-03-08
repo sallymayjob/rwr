@@ -14,6 +14,27 @@ const SHEET_QUEUE = 'Queue';
 const SLACK_API_BASE = 'https://slack.com/api/';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
+const AGENT_PROVIDER = {
+  // Claude — pedagogical and coaching agents
+  quiz_master: 'claude',
+  content_validator: 'claude',
+  ped_coach: 'claude',
+  mission_feedback: 'claude',
+
+  // Gemini — reporting, summarisation, operational agents
+  progress_assistant: 'gemini',
+  report_generator: 'gemini',
+  gaps_analyser: 'gemini',
+  general_assistant: 'gemini',
+  cert_checker: 'gemini',
+  courses_lister: 'gemini',
+  mix_generator: 'gemini'
+};
+
+function getProvider(agentName) {
+  return AGENT_PROVIDER[agentName] || 'claude';
+}
+
 function isAdmin(userId) {
   if (!userId) return false;
   const raw = PROPS.getProperty('ADMIN_USER_IDS') || '';
