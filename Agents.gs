@@ -23,6 +23,7 @@ function logAIUsage(provider, agentName, inputApproxWords, outputApproxWords) {
 
 function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
   const inputWords = approxWords(systemPrompt) + approxWords(userMessage);
+function callClaude(systemPrompt, userMessage, maxTokens) {
   try {
     const key = PROPS.getProperty('ANTHROPIC_API_KEY');
     const res = UrlFetchApp.fetch(ANTHROPIC_URL, {
@@ -54,6 +55,8 @@ function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
     const output = data.content[0].text || 'I encountered an issue. Please try again in a moment.';
     logAIUsage('claude', agentName || 'unknown', inputWords, approxWords(output));
     return output;
+    if (!data.content || !data.content.length) return 'I encountered an issue. Please try again in a moment.';
+    return data.content[0].text || 'I encountered an issue. Please try again in a moment.';
   } catch (err) {
     Logger.log('callClaude error: ' + err);
     return 'I encountered an issue. Please try again in a moment.';
@@ -198,6 +201,14 @@ function getSystemPrompt(agentName) {
 
     mix_generator:
       'You are the RWR Group LMS mix generator assistant. You receive JSON with optional topic query and candidate ready lessons. Produce a concise Slack-formatted learning mix recommendation and short rationale under 160 words. Brand voice: confident, people-first. Do not use: leverage, synergy, transformative, staff, human resources.'
+      'You are the RWR LMS progress assistant. Provide a brief, encouraging progress update for a recruiting professional. ' +
+      'Reference their actual completion stats. Keep it under 100 words. Tone: collegial peer, not corporate system.',
+
+    general_assistant:
+      'You are the Agentic LMS for RWR Group — a specialist recruitment training system. You help recruiting professionals across ' +
+      'RWR Health, Hospoworld, Retailworld, Retailworld, RWR Construction, and RWR Executive Search develop their professional skills. ' +
+      'Answer questions about the LMS, their training, or recruiting practice. Keep responses concise and practical. RWR voice: confident, people-first, forward-looking. ' +
+      'Core positioning: "We don\'t recruit — we empower those who do."'
   };
   return prompts[agentName] || prompts.general_assistant;
 }
@@ -231,6 +242,7 @@ function agentQuizMaster(payload) {
   const prompt = getSystemPrompt('quiz_master').replace('{lessonId}', lessonId);
 
   const aiText = callAI('quiz_master', prompt, 'Submission evidence:\n' + evidence, 300);
+  const aiText = callClaude(prompt, 'Submission evidence:\n' + evidence, 300);
   let score = 0;
   let feedback = aiText;
   let passed = false;
@@ -271,6 +283,10 @@ function agentProgress(payload) {
   const aiText = callAI('progress_assistant', getSystemPrompt('progress_assistant'), JSON.stringify(progressPayload), 220);
   const blocks = buildProgressBlocks(learner, submissions, moduleRow);
   return postDM(payload.user_id, aiText, blocks);
+  const subs = getLearnerSubmissions(payload.user_id);
+  const moduleRow = getModuleRow(learner['Current Module']);
+  const blocks = buildProgressBlocks(learner, subs, moduleRow);
+  return postDM(payload.user_id, 'Progress snapshot', blocks);
 }
 
 function agentEnroll(payload) {
@@ -394,6 +410,7 @@ function agentReport(payload) {
 
   const aiText = callAI('report_generator', getSystemPrompt('report_generator'), JSON.stringify(reportPayload), 500);
   return postDM(payload.user_id, aiText, buildReportBlocks(learners, submissions, modules));
+  return postDM(payload.user_id, 'Cohort report ready.', buildReportBlocks(learners, submissions, modules));
 }
 
 function agentHelp(payload) {
@@ -423,6 +440,12 @@ function agentCourses(payload) {
 
   const aiText = callAI('courses_lister', getSystemPrompt('courses_lister'), JSON.stringify(payloadObj), 220);
   return postDM(payload.user_id, aiText);
+  const lines = courses.map(function(c) {
+    const enrolled = learner && String(learner['Enrolled Course']) === String(c['CourseID']) ? ' (enrolled)' : '';
+    return '• ' + c['CourseID'] + ': ' + c['Course Title'] + enrolled;
+  });
+
+  return postDM(payload.user_id, '*Courses*\n' + (lines.join('\n') || 'No courses found.'));
 }
 
 function agentCert(payload) {
@@ -463,6 +486,15 @@ function agentCert(payload) {
 
   const aiText = callAI('cert_checker', getSystemPrompt('cert_checker'), JSON.stringify(certPayload), 180);
   return postDM(payload.user_id, aiText);
+  const subs = getLearnerSubmissions(payload.user_id).map(function(s) { return String(s['Lesson']); });
+  const doneSet = {};
+  subs.forEach(function(id) { doneSet[id] = true; });
+
+  const missing = required.filter(function(id) { return !doneSet[id]; });
+  if (required.length && missing.length === 0) {
+    return postDM(payload.user_id, 'You are certification-eligible for module ' + moduleId + '. 🎉');
+  }
+  return postDM(payload.user_id, 'Not yet eligible for certification in ' + moduleId + '. Remaining lessons: ' + missing.slice(0, 10).join(', '));
 }
 
 function agentGaps(payload) {
@@ -494,6 +526,14 @@ function agentGaps(payload) {
 
   const aiText = callAI('gaps_analyser', getSystemPrompt('gaps_analyser'), JSON.stringify(gapPayload), 300);
   return postDM(payload.user_id, aiText);
+  const behind = learners.filter(function(l) {
+    return (countByLearner[l['UserID']] || 0) < (median - 3);
+  });
+
+  const text = behind.length
+    ? behind.map(function(l) { return '• ' + (l['Name'] || l['UserID']) + ' (' + (countByLearner[l['UserID']] || 0) + ' complete)'; }).join('\n')
+    : 'No learners are > 3 lessons behind median.';
+  return postDM(payload.user_id, '*Gap Report*\nMedian completions: ' + median + '\n' + text);
 }
 
 function agentBackup(payload) {
@@ -545,17 +585,24 @@ function agentMix(payload) {
 
   const aiText = callAI('mix_generator', getSystemPrompt('mix_generator'), JSON.stringify({ query: query, lessons: picks }), 240);
   return postDM(payload.user_id, aiText);
+    if (!query || hay.indexOf(query) !== -1) picks.push('• ' + r[idxLesson] + ' — ' + r[idxTitle]);
+    if (picks.length >= 12) break;
+  }
+
+  return postDM(payload.user_id, '*Content Mix*\n' + (picks.join('\n') || 'No matching ready lessons found.'));
 }
 
 function handleMention(event) {
   const text = event.text || '';
   const reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  const reply = callClaude(getSystemPrompt('general_assistant'), text, 250);
   return postMessage(event.channel, reply, null);
 }
 
 function handleDirectMessage(event) {
   const text = event.text || '';
   const reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  const reply = callClaude(getSystemPrompt('general_assistant'), text, 250);
   return postMessage(event.channel, reply, null);
 }
 
