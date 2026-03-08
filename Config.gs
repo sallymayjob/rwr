@@ -28,7 +28,8 @@ const AGENT_PROVIDER = {
   general_assistant: 'gemini',
   cert_checker: 'gemini',
   courses_lister: 'gemini',
-  mix_generator: 'gemini'
+  mix_generator: 'gemini',
+  media_agent: 'claude'
 };
 
 function getProvider(agentName) {

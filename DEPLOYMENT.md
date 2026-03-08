@@ -71,7 +71,7 @@ In your Slack App settings:
 Create commands pointing to the Web App URL:
 
 - `/learn`, `/submit`, `/progress`, `/courses`, `/help`, `/cert`
-- `/enroll`, `/unenroll`, `/onboard`, `/offboard`, `/report`, `/gaps`, `/backup`, `/mix`
+- `/enroll`, `/unenroll`, `/onboard`, `/offboard`, `/report`, `/gaps`, `/backup`, `/mix`, `/media`
 
 ### Event Subscriptions
 
@@ -114,10 +114,40 @@ This installs a time-based trigger to execute `processQueuedPipeline()` every mi
 
 ## 9) Troubleshooting
 
+
+### Trigger setup checklist
+
+If queue jobs are not processing, verify trigger setup exactly:
+
+1. Open Apps Script -> Triggers (clock icon).
+2. Confirm there is a trigger for function `processQueuedPipeline`.
+3. Event source: **Time-driven**.
+4. Type: **Minutes timer**.
+5. Interval: **Every 1 minute**.
+6. If missing, run `setupTrigger()` once from the editor and re-check Triggers.
+
 ### Invalid signature
 
 - Verify `SLACK_SIGNING_SECRET` exactly matches Slack app setting.
 - Confirm Slack requests hit the same deployment URL.
+
+### TypeError: Cannot read properties of undefined (reading "postData")
+
+- This happens if `doPost` is run directly from the Apps Script editor.
+- `doPost` must be invoked by an actual HTTP POST request from Slack.
+- Test by using Slack command/event calls, not the editor Run button.
+
+### processQueuedPipeline error: Sheet not found: Queue
+
+- Ensure your spreadsheet has a tab named exactly `Queue` (case-sensitive), or let runtime auto-create it when queue writes occur.
+- Confirm `SHEETS_ID` points to the correct spreadsheet in Script Properties.
+- After fixing, run one slash command to enqueue and verify `PENDING` rows appear.
+
+### Signing secret appears invalid even when correct
+
+- Redeploy a **new version** of the Web App after property/code changes.
+- Confirm Slack is calling that exact deployed URL.
+- In Apps Script logs, if headers are unavailable in runtime, configure `SLACK_VERIFICATION_TOKEN` as fallback.
 
 ### No DM or Slack API errors
 

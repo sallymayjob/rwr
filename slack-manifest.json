@@ -107,6 +107,13 @@
         "description": "Admin: generate learning mix",
         "usage_hint": "[topic]",
         "should_escape": false
+      },
+      {
+        "command": "/media",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: assess lesson media needs and brief",
+        "usage_hint": "<lessonId>",
+        "should_escape": false
       }
     ]
   },

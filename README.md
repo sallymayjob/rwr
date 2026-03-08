@@ -51,6 +51,7 @@ Core design goals:
 - `/gaps`
 - `/backup`
 - `/mix`
+- `/media`
 
 ## Slack Events
 
@@ -107,3 +108,8 @@ Agent routing is configured in `Config.gs` (`AGENT_PROVIDER`).
 - Add execution log alerting (queue errors, provider failures, rate limiting).
 - Add periodic archival or cleanup strategy for historical queue/submission volume.
 - Add automated Apps Script tests or external harness for regression checks.
+
+
+## Media Agent
+
+Use `/media <lessonId>` (admin only) to run a media-needs review for a lesson. The agent defaults to no media and only recommends visuals when they materially improve clarity. It writes `Media Required` (`TRUE`/`FALSE`) and `Media Brief` (JSON brief text when required) directly to the `Lessons` sheet.

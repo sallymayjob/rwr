@@ -1,47 +1,82 @@
 function doPost(e) {
-  const raw = e && e.postData && e.postData.contents ? e.postData.contents : '';
-  const type = (e && e.postData && e.postData.type) ? e.postData.type : '';
-  const body = parseIncomingBody(raw, type);
-
-  // Slack URL verification must return plain challenge text immediately.
-  // In Apps Script, signature headers are not always exposed in e.parameter/e.parameters,
-  // so we resolve challenge before strict signature validation to avoid setup deadlocks.
-  const challenge = (body && body.challenge) || (e && e.parameter && e.parameter.challenge) || '';
-  if (body.type === 'url_verification' || (challenge && !body.command && !body.event)) {
-    return ContentService.createTextOutput(String(challenge)).setMimeType(ContentService.MimeType.TEXT);
+  if (!e || !e.postData) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ error: 'Missing postData. Trigger doPost via HTTP POST, not editor Run.' }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
 
+  const rawBody = e.postData.contents || '';
+
+  // Step 1 - attempt JSON parse (events and block_actions arrive as JSON)
+  let body = {};
+  try {
+    body = JSON.parse(rawBody);
+  } catch (err) {
+    // Not JSON - likely a slash command (application/x-www-form-urlencoded)
+    // body stays as {} and will be populated from e.parameter below
+  }
+
+  // Step 2 - URL verification challenge MUST come before signature validation
+  // Slack sends this with no valid signature on first contact - this is intentional
+  if (body.type === 'url_verification') {
+    return ContentService
+      .createTextOutput(body.challenge)
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Step 3 - validate Slack signature for all other request types
   if (!validateSlackRequest(e)) {
     return ContentService
       .createTextOutput(JSON.stringify({ error: 'Invalid signature' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  let queuePayload = {};
-  let userId = '';
-
-  if (body.command) {
-    queuePayload = { kind: 'command', payload: body };
-    userId = body.user_id || '';
-  } else if (body.event) {
-    queuePayload = { kind: 'event', payload: body.event };
-    userId = body.event.user || body.event.bot_id || '';
-  } else {
-    queuePayload = { kind: 'unknown', payload: body };
-  }
-
-  appendToQueue(userId, JSON.stringify(queuePayload));
-
-  // Immediate worker run can reduce latency; time-based trigger remains the primary mechanism.
-  try { processQueuedPipeline(); } catch (err) { Logger.log('Inline queue process skipped: ' + err); }
-
-  if (body.command) {
+  // Step 4 - for slash commands, body is form-encoded - read from e.parameter
+  const command = e.parameter && e.parameter.command;
+  if (command) {
+    const payload = {
+      command: command,
+      text: e.parameter.text || '',
+      user_id: e.parameter.user_id,
+      user_name: e.parameter.user_name,
+      channel_id: e.parameter.channel_id,
+      team_id: e.parameter.team_id,
+      response_url: e.parameter.response_url
+    };
+    appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
     return ContentService
       .createTextOutput(JSON.stringify({ response_type: 'in_channel', text: '⏳ On it...' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+  // Step 5 - block_actions (button clicks)
+  if (body.type === 'block_actions') {
+    const action = body.actions && body.actions[0];
+    const userId = body.user && body.user.id;
+    if (action && userId) {
+      appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
+    }
+    return ContentService
+      .createTextOutput('')
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Step 6 - event_callback (app_mention, message.im, reaction_added)
+  if (body.type === 'event_callback') {
+    const event = body.event;
+    const userId = event && (event.user || event.item_user);
+    if (event) {
+      appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }));
+    }
+    return ContentService
+      .createTextOutput('')
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Fallback - unknown request type
+  return ContentService
+    .createTextOutput(JSON.stringify({ ok: true }))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function processQueuedPipeline() {
@@ -50,6 +85,7 @@ function processQueuedPipeline() {
   if (!lock.tryLock(5000)) return;
 
   try {
+    ensureQueueSheet();
     const data = getAllRows(SHEET_QUEUE);
     const headers = data.headers;
     const rows = data.rows;
@@ -74,6 +110,19 @@ function processQueuedPipeline() {
           routeCommand(job.payload);
         } else if (job.kind === 'event') {
           routeEvent(job.payload);
+        } else if (job.kind === 'block_action') {
+          const action = job.payload && job.payload.actions && job.payload.actions[0];
+          if (action && action.value) {
+            try {
+              const value = JSON.parse(action.value);
+              if (value.lesson_id && value.user_id) {
+                writeSubmission(value.lesson_id, value.user_id, null, 'slash_command');
+                updateLearnerProgress(value.user_id, value.lesson_id);
+              }
+            } catch (parseErr) {
+              Logger.log('block_action parse error: ' + parseErr);
+            }
+          }
         } else {
           Logger.log('Unknown queue kind at row ' + (rowIdx + 2));
         }
@@ -114,6 +163,7 @@ function routeCommand(payload) {
     case '/courses': return agentCourses(payload);
     case '/help': return agentHelp(payload);
     case '/mix': return adminOnly(payload, function() { return agentMix(payload); });
+    case '/media': return adminOnly(payload, function() { return agentMedia(payload); });
     default: return postDM(payload.user_id, 'Unknown command.');
   }
 }

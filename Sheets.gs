@@ -360,6 +360,67 @@ function syncCourseRollup(courseId) {
 }
 
 function appendToQueue(userId, payloadJson) {
-  const sheet = SS.getSheetByName(SHEET_QUEUE);
+  const sheet = ensureQueueSheet();
   sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING']);
+}
+
+
+function updateLessonMediaColumns(lessonId, mediaRequired, mediaBriefText) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const lessons = getAllRows(SHEET_LESSONS);
+    const idxLessonId = lessons.headers.indexOf('LessonID');
+    const idxMediaRequired = lessons.headers.indexOf('Media Required');
+    const idxMediaBrief = lessons.headers.indexOf('Media Brief');
+    if (idxMediaRequired < 0 || idxMediaBrief < 0) {
+      throw new Error('Lessons sheet is missing Media Required or Media Brief columns');
+    }
+
+    for (let i = 0; i < lessons.rows.length; i++) {
+      if (String(lessons.rows[i][idxLessonId]) === String(lessonId)) {
+        const rowIndex = i + 2;
+        lessons.sheet.getRange(rowIndex, idxMediaRequired + 1).setValue(mediaRequired ? 'TRUE' : 'FALSE');
+        lessons.sheet.getRange(rowIndex, idxMediaBrief + 1).setValue(mediaRequired ? String(mediaBriefText || '') : '');
+        SpreadsheetApp.flush();
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    Logger.log('updateLessonMediaColumns error: ' + err);
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+function ensureQueueSheet() {
+  let sheet = SS.getSheetByName(SHEET_QUEUE);
+  const headers = ['Created', 'User_Id', 'Payload_Json', 'Status'];
+
+  if (!sheet) {
+    sheet = SS.insertSheet(SHEET_QUEUE);
+    sheet.appendRow(headers);
+    SpreadsheetApp.flush();
+    return sheet;
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow === 0) {
+    sheet.appendRow(headers);
+    SpreadsheetApp.flush();
+    return sheet;
+  }
+
+  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const needsHeader = headers.some(function(h, i) { return String(firstRow[i] || '') !== h; });
+  if (needsHeader) {
+    sheet.insertRows(1, 1);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    SpreadsheetApp.flush();
+  }
+
+  return sheet;
 }

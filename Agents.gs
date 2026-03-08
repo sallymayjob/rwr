@@ -197,7 +197,10 @@ function getSystemPrompt(agentName) {
       'You are the RWR Group LMS course listing assistant. You receive JSON with available courses and enrolment status. Return a concise Slack-formatted summary showing each course and whether the learner is enrolled. Keep it practical, clear, and under 120 words. Brand voice: confident, people-first. Do not use: leverage, synergy, transformative, staff, human resources.',
 
     mix_generator:
-      'You are the RWR Group LMS mix generator assistant. You receive JSON with optional topic query and candidate ready lessons. Produce a concise Slack-formatted learning mix recommendation and short rationale under 160 words. Brand voice: confident, people-first. Do not use: leverage, synergy, transformative, staff, human resources.'
+      'You are the RWR Group LMS mix generator assistant. You receive JSON with optional topic query and candidate ready lessons. Produce a concise Slack-formatted learning mix recommendation and short rationale under 160 words. Brand voice: confident, people-first. Do not use: leverage, synergy, transformative, staff, human resources.',
+
+    media_agent:
+      'Media Agent - RWR Slack LMS. Role: Media coordinator. Assess whether a lesson needs visual support and, if needed, produce a structured creative brief. You do not create the asset. Default stance is no media unless a visual would clearly reduce confusion or speed up understanding for recruiting professionals. Recommend media only for multi-step decisions, side-by-side comparisons, data storytelling, named frameworks, spatial mappings, or before/after transformations. Do not recommend media for short conceptual lessons, single-step missions, reflection content, or visuals that duplicate text. If media is needed, output strict JSON with: lesson_id, media_required, rationale, media_brief (asset_type, purpose, content, palette, design_notes, slack_constraints), status=MEDIA_BRIEF_READY. If not needed output media_required=false, media_brief=null, status=MEDIA_COMPLETE. Use RWR design language: rounded shapes, dot motif, minimal style, Poppins, people-first imagery, and palette {#000000,#FFFFFF,#0054FF,#F58220,#E63976,#3FA535,#6A0DAD}. Slack constraints: max width 360px, PNG/JPG only, include alt text. Advisory only, never fail or block lessons.'
   };
   return prompts[agentName] || prompts.general_assistant;
 }
@@ -399,7 +402,7 @@ function agentReport(payload) {
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
   const learnerCmds = ['/learn', '/submit', '/progress', '/courses', '/help', '/cert'];
-  const adminCmds = ['/enroll', '/unenroll', '/onboard', '/offboard', '/report', '/gaps', '/backup', '/mix'];
+  const adminCmds = ['/enroll', '/unenroll', '/onboard', '/offboard', '/report', '/gaps', '/backup', '/mix', '/media'];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
   if (admin) text += '\n\n*Admin commands*\n' + adminCmds.join('\n');
   return postDM(payload.user_id, text);
@@ -545,6 +548,63 @@ function agentMix(payload) {
 
   const aiText = callAI('mix_generator', getSystemPrompt('mix_generator'), JSON.stringify({ query: query, lessons: picks }), 240);
   return postDM(payload.user_id, aiText);
+}
+
+
+function agentMedia(payload) {
+  try {
+    const lessonId = String((payload.text || '').trim()).split(/\s+/)[0] || '';
+    if (!lessonId) return postDM(payload.user_id, 'Usage: /media <lessonId>');
+
+    const lesson = getLessonRow(lessonId);
+    if (!lesson) return postDM(payload.user_id, 'Lesson not found: ' + lessonId);
+
+    const mediaInput = {
+      lesson_id: lessonId,
+      title: lesson['Title'] || '',
+      module: lesson['Module'] || '',
+      objective: lesson['Objective'] || '',
+      core_content: lesson['Core Content'] || '',
+      mission_description: lesson['Mission Description'] || '',
+      mission_format: lesson['Mission Format'] || '',
+      verification_question: lesson['Verification Question'] || ''
+    };
+
+    const aiText = callAI('media_agent', getSystemPrompt('media_agent'), JSON.stringify(mediaInput), 700);
+
+    let mediaRequired = false;
+    let rationale = 'Media review complete.';
+    let mediaBrief = null;
+    let status = 'MEDIA_COMPLETE';
+
+    try {
+      const parsed = JSON.parse(aiText);
+      mediaRequired = !!parsed.media_required;
+      rationale = parsed.rationale || rationale;
+      mediaBrief = parsed.media_brief || null;
+      status = parsed.status || (mediaRequired ? 'MEDIA_BRIEF_READY' : 'MEDIA_COMPLETE');
+    } catch (errParse) {
+      Logger.log('agentMedia parse fallback: ' + errParse + ' | raw=' + aiText);
+      rationale = 'Media agent output was not valid JSON; no sheet changes made.';
+      return postDM(payload.user_id, rationale + '\nRaw output:\n' + aiText);
+    }
+
+    const briefText = mediaRequired ? JSON.stringify(mediaBrief || {}, null, 2) : '';
+    const updated = updateLessonMediaColumns(lessonId, mediaRequired, briefText);
+    if (!updated) return postDM(payload.user_id, 'Unable to update lesson media columns for ' + lessonId);
+
+    const summary = [
+      '*Media Review:* ' + lessonId,
+      '*Media Required:* ' + (mediaRequired ? 'TRUE' : 'FALSE'),
+      '*Status:* ' + status,
+      '*Rationale:* ' + rationale
+    ].join('\n');
+
+    return postDM(payload.user_id, summary + (mediaRequired ? ('\n\n*Media Brief*\n```' + briefText + '```') : ''));
+  } catch (err) {
+    Logger.log('agentMedia error: ' + err);
+    return postDM(payload.user_id, 'Media review failed. Please try again.');
+  }
 }
 
 function handleMention(event) {
