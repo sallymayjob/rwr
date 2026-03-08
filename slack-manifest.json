@@ -1,0 +1,188 @@
+{
+  "display_information": {
+    "name": "RWR Group Agentic LMS",
+    "description": "Slack-native LMS for RWR Group",
+    "background_color": "#1E3A8A"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "RWR LMS",
+      "always_online": false
+    },
+    "slash_commands": [
+      {
+        "command": "/learn",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Deliver your next lesson",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/submit",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Submit lesson verification",
+        "usage_hint": "<lessonId> <evidence>",
+        "should_escape": false
+      },
+      {
+        "command": "/progress",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Show your current progress",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/courses",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "List courses and enrollment status",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/help",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Show available LMS commands",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/cert",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Check certification eligibility",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/enroll",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: enroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/unenroll",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: unenroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/onboard",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: onboard a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/offboard",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: archive a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/report",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: generate cohort report",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/gaps",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: identify learners behind",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/backup",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: back up LMS sheets",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/mix",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: generate learning mix",
+        "usage_hint": "[topic]",
+        "should_escape": false
+      },
+      {
+        "command": "/media",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: assess lesson media needs and brief",
+        "usage_hint": "<lessonId>",
+        "should_escape": false
+      },
+      {
+        "command": "/startlesson",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: start lesson trigger",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/stoplesson",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: stop lesson trigger",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/enrol",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: enroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/unenrol",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: unenroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      }
+    ],
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "chat:write",
+        "commands",
+        "im:history",
+        "im:read",
+        "im:write",
+        "reactions:read",
+        "users:read",
+        "users:read.email",
+        "chat:write.public",
+        "chat:write.customize"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://SCRIPT_WEB_APP_URL",
+      "bot_events": [
+        "app_mention",
+        "message.im",
+        "reaction_added"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://SCRIPT_WEB_APP_URL"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
