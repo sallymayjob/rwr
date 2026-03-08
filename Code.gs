@@ -1,27 +1,19 @@
 function doPost(e) {
+  const raw = e && e.postData && e.postData.contents ? e.postData.contents : '';
+  const type = (e && e.postData && e.postData.type) ? e.postData.type : '';
+  const body = parseIncomingBody(raw, type);
+
+  // Slack URL verification must return plain challenge text immediately.
+  // In Apps Script, signature headers are not always exposed in e.parameter/e.parameters,
+  // so we resolve challenge before strict signature validation to avoid setup deadlocks.
+  if (body.type === 'url_verification') {
+    return ContentService.createTextOutput(String(body.challenge || '')).setMimeType(ContentService.MimeType.TEXT);
+  }
+
   if (!validateSlackRequest(e)) {
     return ContentService
       .createTextOutput(JSON.stringify({ error: 'Invalid signature' }))
       .setMimeType(ContentService.MimeType.JSON);
-  }
-
-  const raw = e.postData && e.postData.contents ? e.postData.contents : '';
-  const type = (e.postData && e.postData.type) ? e.postData.type : '';
-
-  let body = {};
-  if (type.indexOf('application/json') !== -1) {
-    body = JSON.parse(raw || '{}');
-  } else {
-    const parsed = parseFormEncoded(raw);
-    if (parsed.payload) {
-      try { body = JSON.parse(parsed.payload); } catch (err) { body = parsed; }
-    } else {
-      body = parsed;
-    }
-  }
-
-  if (body.type === 'url_verification') {
-    return ContentService.createTextOutput(body.challenge || '');
   }
 
   let queuePayload = {};
@@ -63,7 +55,6 @@ function processQueuedPipeline() {
     const idxPayload = headers.indexOf('Payload_Json');
     const idxStatus = headers.indexOf('Status');
 
-    const writeback = [];
     const toRun = [];
     for (let i = 0; i < rows.length; i++) {
       if (String(rows[i][idxStatus]) === 'PENDING') {
@@ -146,6 +137,30 @@ function setupTrigger() {
     .timeBased()
     .everyMinutes(1)
     .create();
+}
+
+function parseIncomingBody(raw, type) {
+  let body = {};
+  try {
+    if (type.indexOf('application/json') !== -1) {
+      body = JSON.parse(raw || '{}');
+    } else {
+      const parsed = parseFormEncoded(raw);
+      if (parsed.payload) {
+        try {
+          body = JSON.parse(parsed.payload);
+        } catch (err) {
+          body = parsed;
+        }
+      } else {
+        body = parsed;
+      }
+    }
+  } catch (errOuter) {
+    Logger.log('parseIncomingBody error: ' + errOuter);
+    body = {};
+  }
+  return body || {};
 }
 
 function parseFormEncoded(raw) {
