@@ -1,8 +1,9 @@
 {
   "display_information": {
     "name": "RWR Group Agentic LMS",
-    "description": "Slack-native LMS for RWR Group",
-    "background_color": "#1E3A8A"
+    "description": "Slack-native LMS for RWR Group recruitment teams",
+    "background_color": "#1E3A8A",
+    "long_description": "RWR LMS delivers onboarding, lessons, submissions, progress tracking, reporting, and admin workflows directly inside Slack. Use slash commands to start learning, complete missions, and manage cohorts across RWR brands."
   },
   "features": {
     "bot_user": {
@@ -145,7 +146,7 @@
       }
     ],
     "app_home": {
-      "home_tab_enabled": true,
+      "home_tab_enabled": false,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
     }

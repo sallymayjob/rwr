@@ -38,6 +38,29 @@ function callAI(agentName, systemPrompt, userMessage, maxTokens) {
   return 'AI integrations are disabled in this deployment.';
 }
 
+
+
+function sendAutomatedMessageOnce(userId, dedupeKey, text, blocks, nextCommand) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = 'auto_msg:' + String(userId || '') + ':' + String(dedupeKey || 'default');
+    if (cache.get(key)) return { ok: true, skipped: true };
+
+    var finalText = String(text || '');
+    if (nextCommand) {
+      finalText += '\n\nNext command: ' + nextCommand;
+    }
+
+    var result = postDM(userId, finalText, blocks || null);
+    cache.put(key, '1', 3600);
+    return result;
+  } catch (err) {
+    Logger.log('sendAutomatedMessageOnce error: ' + err);
+    var fallbackText = String(text || '') + (nextCommand ? ('\n\nNext command: ' + nextCommand) : '');
+    return postDM(userId, fallbackText, blocks || null);
+  }
+}
+
 function getSystemPrompt(agentName) {
   const prompts = {
     quiz_master:
@@ -78,7 +101,7 @@ function getSystemPrompt(agentName) {
 }
 
 function agentTutor(payload) {
-  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
+  if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   if (!learner) {
     const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
@@ -88,7 +111,7 @@ function agentTutor(payload) {
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
       ]);
     }
-    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
   const lessonId = getCurrentLessonId(learner);
@@ -102,7 +125,7 @@ function agentTutor(payload) {
 }
 
 function agentQuizMaster(payload) {
-  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
+  if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   if (!learner) {
     const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
@@ -112,7 +135,7 @@ function agentQuizMaster(payload) {
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
       ]);
     }
-    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
   const txt = (payload.text || '').trim();
@@ -149,7 +172,7 @@ function agentQuizMaster(payload) {
 }
 
 function agentProgress(payload) {
-  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
+  if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   if (!learner) {
     const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
@@ -159,7 +182,7 @@ function agentProgress(payload) {
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
       ]);
     }
-    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
   const submissions = getLearnerSubmissions(payload.user_id);
@@ -204,7 +227,7 @@ function agentEnroll(payload) {
   } finally {
     lock.releaseLock();
   }
-  return postDM(payload.user_id, 'Enrolled <@' + userId + '> in ' + courseId + '.');
+  return postDM(payload.user_id, 'Enrolled <@' + userId + '> in ' + courseId + '.\n\nNext command: /learn');
 }
 
 function agentUnenroll(payload) {
@@ -304,7 +327,7 @@ function agentOnboard(payload) {
     }
   }
 
-  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.');
+  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.\n\nNext command: /progress');
 }
 
 function agentOffboard(payload) {
@@ -363,7 +386,7 @@ function agentHelp(payload) {
 }
 
 function agentCourses(payload) {
-  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
+  if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   const data = getAllRows(SHEET_COURSES);
   const courses = data.rows.map(function(r) { return rowToObj(data.headers, r); });
@@ -384,7 +407,7 @@ function agentCourses(payload) {
 }
 
 function agentCert(payload) {
-  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
+  if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   if (!learner) {
     const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
@@ -394,7 +417,7 @@ function agentCert(payload) {
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
       ]);
     }
-    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
   const moduleId = learner['Current Module'];
@@ -551,7 +574,7 @@ function agentMedia(payload) {
     } catch (errParse) {
       Logger.log('agentMedia parse fallback: ' + errParse + ' | raw=' + aiText);
       rationale = 'Media agent output was not valid JSON; no sheet changes made.';
-      return postDM(payload.user_id, rationale + '\nRaw output:\n' + aiText);
+      return sendAutomatedMessageOnce(payload.user_id, 'media_parse_fallback', rationale + '\nRaw output:\n' + aiText, null, '/media <lessonId>');
     }
 
     const briefText = mediaRequired ? JSON.stringify(mediaBrief || {}, null, 2) : '';
@@ -568,7 +591,7 @@ function agentMedia(payload) {
     return postDM(payload.user_id, summary + (mediaRequired ? ('\n\n*Media Brief*\n```' + briefText + '```') : ''));
   } catch (err) {
     Logger.log('agentMedia error: ' + err);
-    return postDM(payload.user_id, 'Media review failed. Please try again.');
+    return sendAutomatedMessageOnce(payload.user_id, 'media_failed', 'Media review failed. Please try again.', null, '/media <lessonId>');
   }
 }
 
@@ -633,7 +656,7 @@ function handleWorkflowEnroll(payload) {
     const msg = result.created
       ? 'You are now enrolled in ' + courseId + '. Welcome to RWR LMS - use /learn to start.'
       : 'Your enrolment is active for ' + courseId + '. Use /learn to continue.';
-    postDM(userId, msg);
+    sendAutomatedMessageOnce(userId, 'workflow_enroll_' + courseId, msg, null, '/learn');
   } catch (err) {
     Logger.log('handleWorkflowEnroll error: ' + err);
   }
@@ -651,14 +674,22 @@ function agentStopLesson(payload) {
 }
 
 function handleMention(event) {
+  if (!event || event.bot_id || event.subtype === 'bot_message') return;
   const text = event.text || '';
-  const reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  var reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  if (reply && reply.indexOf('AI integrations are disabled') !== -1) {
+    reply += '\n\nNext command: /help';
+  }
   return postMessage(event.channel, reply, null);
 }
 
 function handleDirectMessage(event) {
+  if (!event || event.bot_id || event.subtype === 'bot_message') return;
   const text = event.text || '';
-  const reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  var reply = callAI('general_assistant', getSystemPrompt('general_assistant'), text, 250);
+  if (reply && reply.indexOf('AI integrations are disabled') !== -1) {
+    return sendAutomatedMessageOnce(event.user, 'ai_disabled_dm', reply, null, '/help');
+  }
   return postMessage(event.channel, reply, null);
 }
 

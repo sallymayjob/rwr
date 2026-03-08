@@ -187,6 +187,13 @@ function routeCommand(payload) {
 }
 
 function routeEvent(event) {
+  if (!event) return;
+
+  // Prevent bot/self-message loops from message.im subscriptions.
+  if (event.bot_id || event.subtype === 'bot_message' || event.subtype === 'message_changed') {
+    return;
+  }
+
   switch (event.type) {
     case 'app_mention':
       return handleMention(event);
