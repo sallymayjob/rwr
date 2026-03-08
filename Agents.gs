@@ -22,148 +22,20 @@ function logAIUsage(provider, agentName, inputApproxWords, outputApproxWords) {
 }
 
 function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
-  const inputWords = approxWords(systemPrompt) + approxWords(userMessage);
-  try {
-    const key = PROPS.getProperty('ANTHROPIC_API_KEY');
-    const res = UrlFetchApp.fetch(ANTHROPIC_URL, {
-      method: 'post',
-      contentType: 'application/json',
-      headers: {
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01'
-      },
-      payload: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: maxTokens || 512,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }]
-      }),
-      muteHttpExceptions: true
-    });
-
-    if (res.getResponseCode() !== 200) {
-      Logger.log('Anthropic non-200: ' + res.getContentText());
-      return 'I encountered an issue. Please try again in a moment.';
-    }
-
-    const data = JSON.parse(res.getContentText());
-    if (!data.content || !data.content.length) {
-      return 'I encountered an issue. Please try again in a moment.';
-    }
-
-    const output = data.content[0].text || 'I encountered an issue. Please try again in a moment.';
-    logAIUsage('claude', agentName || 'unknown', inputWords, approxWords(output));
-    return output;
-  } catch (err) {
-    Logger.log('callClaude error: ' + err);
-    return 'I encountered an issue. Please try again in a moment.';
-  }
+  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
+  logAIUsage('claude', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
+  return response;
 }
 
 function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
-  const inputWords = approxWords(systemPrompt) + approxWords(userMessage);
-  try {
-    const key = PROPS.getProperty('GEMINI_API_KEY');
-    if (!key) {
-      Logger.log('Gemini: missing GEMINI_API_KEY');
-      return 'Service temporarily unavailable. Please try again shortly.';
-    }
-
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key);
-    const payload = {
-      system_instruction: {
-        parts: [{ text: systemPrompt }]
-      },
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: userMessage }]
-        }
-      ],
-      generationConfig: {
-        maxOutputTokens: maxTokens || 1000,
-        temperature: 0.4
-      }
-    };
-
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-
-    let response = UrlFetchApp.fetch(url, options);
-    let responseCode = response.getResponseCode();
-
-    if (responseCode === 429) {
-      Logger.log('Gemini: rate limited. Waiting 2s and retrying once.');
-      Utilities.sleep(2000);
-      response = UrlFetchApp.fetch(url, options);
-      responseCode = response.getResponseCode();
-    }
-
-    if (responseCode === 500 || responseCode === 503) {
-      Logger.log('Gemini: transient server error ' + responseCode + '. Waiting 2s and retrying once.');
-      Utilities.sleep(2000);
-      response = UrlFetchApp.fetch(url, options);
-      responseCode = response.getResponseCode();
-    }
-
-    if (responseCode !== 200) {
-      const body = response.getContentText();
-      Logger.log('Gemini HTTP ' + responseCode + ': ' + body);
-
-      if (responseCode === 403) {
-        return 'Service temporarily unavailable. Please try again shortly.';
-      }
-      if (responseCode === 400) {
-        return 'I was unable to generate a response. Please try again.';
-      }
-      return 'I was unable to generate a response. Please try again.';
-    }
-
-    const data = JSON.parse(response.getContentText());
-    if (!data.candidates || data.candidates.length === 0) {
-      Logger.log('Gemini: no candidates returned. Finish reason: ' + JSON.stringify(data.promptFeedback));
-      return 'I was unable to generate a response. Please try again.';
-    }
-
-    const finishReason = data.candidates[0].finishReason;
-    if (finishReason === 'SAFETY') {
-      Logger.log('Gemini: response blocked by safety filter');
-      return 'I was unable to generate a response for that request.';
-    }
-
-    const output = (
-      data.candidates[0] &&
-      data.candidates[0].content &&
-      data.candidates[0].content.parts &&
-      data.candidates[0].content.parts[0] &&
-      data.candidates[0].content.parts[0].text
-    ) || 'I was unable to generate a response. Please try again.';
-
-    if (data.usageMetadata) {
-      Logger.log('Gemini model=gemini-2.0-flash usage=' + JSON.stringify(data.usageMetadata));
-    } else {
-      Logger.log('Gemini model=gemini-2.0-flash usage=unavailable');
-    }
-
-    logAIUsage('gemini', agentName || 'unknown', inputWords, approxWords(output));
-    return output;
-  } catch (err) {
-    Logger.log('callGemini error: ' + err);
-    return 'I was unable to generate a response. Please try again.';
-  }
+  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
+  logAIUsage('gemini', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
+  return response;
 }
 
 function callAI(agentName, systemPrompt, userMessage, maxTokens) {
-  const provider = getProvider(agentName);
-  Logger.log('callAI: ' + agentName + ' -> ' + provider);
-  if (provider === 'gemini') {
-    return callGemini(systemPrompt, userMessage, maxTokens, agentName);
-  }
-  return callClaude(systemPrompt, userMessage, maxTokens, agentName);
+  Logger.log('callAI disabled: ' + agentName);
+  return 'AI integrations are disabled in this deployment.';
 }
 
 function getSystemPrompt(agentName) {
@@ -206,8 +78,18 @@ function getSystemPrompt(agentName) {
 }
 
 function agentTutor(payload) {
+  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  if (!learner) {
+    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
+    if (workflowLink) {
+      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
+        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
+      ]);
+    }
+    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  }
 
   const lessonId = getCurrentLessonId(learner);
   if (!lessonId) return postDM(payload.user_id, 'You are up to date. No pending lesson in your current module.');
@@ -220,8 +102,18 @@ function agentTutor(payload) {
 }
 
 function agentQuizMaster(payload) {
+  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  if (!learner) {
+    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
+    if (workflowLink) {
+      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
+        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
+      ]);
+    }
+    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  }
 
   const txt = (payload.text || '').trim();
   const parts = txt.split(/\s+/);
@@ -257,8 +149,18 @@ function agentQuizMaster(payload) {
 }
 
 function agentProgress(payload) {
+  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  if (!learner) {
+    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
+    if (workflowLink) {
+      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
+        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
+      ]);
+    }
+    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  }
 
   const submissions = getLearnerSubmissions(payload.user_id);
   const moduleRow = getModuleRow(learner['Current Module']);
@@ -331,26 +233,78 @@ function agentUnenroll(payload) {
 }
 
 function agentOnboard(payload) {
-  const targetUser = ((payload.text || '').trim() || payload.user_id);
-  const info = getUserInfo(targetUser);
+  var rawTarget = String((payload.text || '').trim() || payload.user_id);
+  var targetUser = resolveSlackUserId(rawTarget) || rawTarget;
+  if (!/^U[A-Z0-9]+$/i.test(targetUser)) {
+    return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
+  }
+
+  var info = getUserInfo(targetUser);
   if (!info) return postDM(payload.user_id, 'Unable to fetch Slack user profile.');
 
-  const learnersSheet = SS.getSheetByName(SHEET_LEARNERS);
-  const existing = getLearnerRecord(targetUser);
-  if (existing) return postDM(payload.user_id, 'Learner already exists.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var data = getAllRows(SHEET_LEARNERS);
+    var idxUser = data.headers.indexOf('UserID');
+    var idxName = data.headers.indexOf('Name');
+    var idxEmail = data.headers.indexOf('Email');
+    var idxCourse = data.headers.indexOf('Enrolled Course');
+    var idxModule = data.headers.indexOf('Current Module');
+    var idxProgress = data.headers.indexOf('Progress (%)');
+    var idxStatus = data.headers.indexOf('Status');
+    var idxJoined = data.headers.indexOf('Joined Date');
+    var idxSubs = data.headers.indexOf('Lesson Submissions');
 
-  learnersSheet.appendRow([
-    targetUser,
-    info.name,
-    info.email,
-    '',
-    '',
-    0,
-    'Active',
-    new Date(),
-    ''
-  ]);
-  return postDM(targetUser, 'Welcome to the RWR Group LMS. You can now use /learn to start.');
+    var foundRow = -1;
+    for (var i = 0; i < data.rows.length; i++) {
+      if (String(data.rows[i][idxUser]) === String(targetUser)) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+
+    if (foundRow > 0) {
+      data.sheet.getRange(foundRow, idxName + 1).setValue(info.name || '');
+      data.sheet.getRange(foundRow, idxEmail + 1).setValue(info.email || '');
+      data.sheet.getRange(foundRow, idxCourse + 1).setValue('COURSE_12M');
+      data.sheet.getRange(foundRow, idxModule + 1).setValue('M0');
+      data.sheet.getRange(foundRow, idxStatus + 1).setValue('Active');
+    } else {
+      var row = [];
+      row[idxUser] = targetUser;
+      row[idxName] = info.name || '';
+      row[idxEmail] = info.email || '';
+      row[idxCourse] = 'COURSE_12M';
+      row[idxModule] = 'M0';
+      row[idxProgress] = 0;
+      row[idxStatus] = 'Active';
+      row[idxJoined] = new Date();
+      row[idxSubs] = '';
+      var normalized = data.headers.map(function(_, idx) { return row[idx] == null ? '' : row[idx]; });
+      data.sheet.appendRow(normalized);
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  var learner = getLearnerRecord(targetUser);
+  var firstLesson = getFirstLessonIdForModule('M0') || getFirstReadyLessonIdForCourse('COURSE_12M');
+  var orientationText = '*Welcome to RWR LMS Orientation (M0)*\nYou are now onboarded and enrolled in COURSE_12M.';
+  postDM(targetUser, orientationText);
+
+  if (firstLesson) {
+    var thread = getSlackThread(firstLesson);
+    if (thread) {
+      var blocks = buildLessonBlocks(thread['Slack Thread Text'], firstLesson, targetUser, learner ? learner._rowIndex : 0);
+      postDM(targetUser, 'Your first lesson is ready.', blocks);
+    } else {
+      postDM(targetUser, 'You are onboarded. First lesson ID: ' + firstLesson + '.');
+    }
+  }
+
+  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.');
 }
 
 function agentOffboard(payload) {
@@ -401,14 +355,15 @@ function agentReport(payload) {
 
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
-  const learnerCmds = ['/learn', '/submit', '/progress', '/courses', '/help', '/cert'];
-  const adminCmds = ['/enroll', '/unenroll', '/onboard', '/offboard', '/report', '/gaps', '/backup', '/mix', '/media'];
+  const learnerCmds = ['/learn', '/submit', '/progress', '/courses', '/help'];
+  const adminCmds = ['/enroll', '/enrol', '/unenroll', '/unenrol', '/onboard', '/offboard', '/report', '/gaps', '/backup', '/mix', '/media', '/cert', '/startlesson', '/stoplesson'];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
   if (admin) text += '\n\n*Admin commands*\n' + adminCmds.join('\n');
   return postDM(payload.user_id, text);
 }
 
 function agentCourses(payload) {
+  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
   const learner = getLearnerRecord(payload.user_id);
   const data = getAllRows(SHEET_COURSES);
   const courses = data.rows.map(function(r) { return rowToObj(data.headers, r); });
@@ -429,8 +384,18 @@ function agentCourses(payload) {
 }
 
 function agentCert(payload) {
+  if (!isLessonTriggerActive()) return postDM(payload.user_id, 'Lessons are currently paused. Please try again later.');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  if (!learner) {
+    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
+    if (workflowLink) {
+      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
+        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
+      ]);
+    }
+    return postDM(payload.user_id, "You're not enrolled yet. Use /enroll to get started.");
+  }
 
   const moduleId = learner['Current Module'];
   const lessons = getAllRows(SHEET_LESSONS);
@@ -605,6 +570,84 @@ function agentMedia(payload) {
     Logger.log('agentMedia error: ' + err);
     return postDM(payload.user_id, 'Media review failed. Please try again.');
   }
+}
+
+
+function upsertLearnerEnrollment(userId, courseId) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const learners = getAllRows(SHEET_LEARNERS);
+    const idxUser = learners.headers.indexOf('UserID');
+    const idxName = learners.headers.indexOf('Name');
+    const idxEmail = learners.headers.indexOf('Email');
+    const idxCourse = learners.headers.indexOf('Enrolled Course');
+    const idxCurrentModule = learners.headers.indexOf('Current Module');
+    const idxProgress = learners.headers.indexOf('Progress (%)');
+    const idxStatus = learners.headers.indexOf('Status');
+    const idxJoined = learners.headers.indexOf('Joined Date');
+    const idxSubmissions = learners.headers.indexOf('Lesson Submissions');
+
+    for (let i = 0; i < learners.rows.length; i++) {
+      if (String(learners.rows[i][idxUser]) === String(userId)) {
+        const rowIndex = i + 2;
+        learners.sheet.getRange(rowIndex, idxCourse + 1).setValue(courseId || 'COURSE_12M');
+        learners.sheet.getRange(rowIndex, idxCurrentModule + 1).setValue(learners.rows[i][idxCurrentModule] || 'M01');
+        learners.sheet.getRange(rowIndex, idxStatus + 1).setValue('Active');
+        SpreadsheetApp.flush();
+        return { created: false };
+      }
+    }
+
+    const info = getUserInfo(userId) || { name: '', email: '' };
+    const row = [];
+    row[idxUser] = userId;
+    row[idxName] = info.name || '';
+    row[idxEmail] = info.email || '';
+    row[idxCourse] = courseId || 'COURSE_12M';
+    row[idxCurrentModule] = 'M01';
+    row[idxProgress] = 0;
+    row[idxStatus] = 'Active';
+    row[idxJoined] = new Date();
+    row[idxSubmissions] = '';
+
+    const normalized = learners.headers.map(function(_, i) { return row[i] == null ? '' : row[i]; });
+    learners.sheet.appendRow(normalized);
+    SpreadsheetApp.flush();
+    return { created: true };
+  } catch (err) {
+    Logger.log('upsertLearnerEnrollment error: ' + err);
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleWorkflowEnroll(payload) {
+  try {
+    const userId = payload && payload.user_id ? payload.user_id : '';
+    const courseId = payload && payload.course_id ? payload.course_id : 'COURSE_12M';
+    if (!userId) return;
+
+    const result = upsertLearnerEnrollment(userId, courseId);
+    const msg = result.created
+      ? 'You are now enrolled in ' + courseId + '. Welcome to RWR LMS - use /learn to start.'
+      : 'Your enrolment is active for ' + courseId + '. Use /learn to continue.';
+    postDM(userId, msg);
+  } catch (err) {
+    Logger.log('handleWorkflowEnroll error: ' + err);
+  }
+}
+
+
+function agentStartLesson(payload) {
+  setLessonTriggerActive(true);
+  return postDM(payload.user_id, 'Lesson trigger is now ACTIVE. Users can access /learn and submit progress.');
+}
+
+function agentStopLesson(payload) {
+  setLessonTriggerActive(false);
+  return postDM(payload.user_id, 'Lesson trigger is now PAUSED. Learner lesson commands are temporarily disabled.');
 }
 
 function handleMention(event) {

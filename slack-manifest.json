@@ -114,8 +114,41 @@
         "description": "Admin: assess lesson media needs and brief",
         "usage_hint": "<lessonId>",
         "should_escape": false
+      },
+      {
+        "command": "/startlesson",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: start lesson trigger",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/stoplesson",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: stop lesson trigger",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/enrol",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: enroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/unenrol",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: unenroll a learner",
+        "usage_hint": "<userId>",
+        "should_escape": false
       }
-    ]
+    ],
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
   },
   "oauth_config": {
     "scopes": {
@@ -129,7 +162,9 @@
         "im:write",
         "reactions:read",
         "users:read",
-        "users:read.email"
+        "users:read.email",
+        "chat:write.public",
+        "chat:write.customize"
       ]
     }
   },

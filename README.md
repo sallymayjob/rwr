@@ -39,12 +39,12 @@ Core design goals:
 - `/progress`
 - `/courses`
 - `/help`
-- `/cert`
 
 ### Admin (guarded by `ADMIN_USER_IDS`)
 
-- `/enroll`
-- `/unenroll`
+- `/enroll` / `/enrol`
+- `/unenroll` / `/unenrol`
+- `/cert`
 - `/onboard`
 - `/offboard`
 - `/report`
@@ -52,6 +52,8 @@ Core design goals:
 - `/backup`
 - `/mix`
 - `/media`
+- `/startlesson`
+- `/stoplesson`
 
 ## Slack Events
 
@@ -88,7 +90,7 @@ Agent routing is configured in `Config.gs` (`AGENT_PROVIDER`).
 3. Set Script Properties (tokens, keys, IDs).
 4. Deploy as a Web App.
 5. Connect Slack slash commands and event subscriptions to the Web App URL.
-6. Run `setupTrigger()` once to install the queue trigger.
+6. Use `/startlesson` to enable lessons (manual mode, no scheduled trigger).
 
 ## Security Notes
 
@@ -113,3 +115,21 @@ Agent routing is configured in `Config.gs` (`AGENT_PROVIDER`).
 ## Media Agent
 
 Use `/media <lessonId>` (admin only) to run a media-needs review for a lesson. The agent defaults to no media and only recommends visuals when they materially improve clarity. It writes `Media Required` (`TRUE`/`FALSE`) and `Media Brief` (JSON brief text when required) directly to the `Lessons` sheet.
+
+
+## Workflow Builder Auto-Enrol
+
+You can auto-enrol users via Slack Workflow Builder by sending a webhook payload containing user info and `workflow_trigger=enroll` (or `action=enroll`). The backend queues a `workflow_enroll` job and upserts the learner into `Learners`. Optionally set `WORKFLOW_ENROLL_LINK` in Script Properties so not-enrolled users receive an *Enrol* button in DM.
+
+
+## AI Execution Mode
+
+This deployment runs in **non-AI mode**. Claude and Gemini calls are disabled, and command-based LMS behavior is used for execution.
+
+
+## Manual Lesson Trigger
+
+Use `/startlesson` and `/stoplesson` (admin only) to control whether learner lesson commands are active. No automated time-based trigger is used.
+
+
+Onboarding note: `/onboard @username` now auto-enrols into `COURSE_12M`, sets `Current Module` to `M0`, sends orientation DM, and delivers first available lesson automatically.

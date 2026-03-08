@@ -50,3 +50,12 @@ function adminOnly(payload, fn) {
   if (isAdmin(payload.user_id)) return fn();
   return { text: "You don't have permission to use this command." };
 }
+
+
+function isLessonTriggerActive() {
+  return (PROPS.getProperty('LESSON_TRIGGER_ACTIVE') || 'false').toLowerCase() === 'true';
+}
+
+function setLessonTriggerActive(active) {
+  PROPS.setProperty('LESSON_TRIGGER_ACTIVE', active ? 'true' : 'false');
+}

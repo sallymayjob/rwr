@@ -53,6 +53,7 @@ In Apps Script:
 - `SHEETS_ID` = `<Google Spreadsheet ID>`
 - `DRIVE_ROOT_ID` = `<Drive folder ID>`
 - `ADMIN_USER_IDS` = `U123...,U456...`
+- `WORKFLOW_ENROLL_LINK` = `<optional Slack workflow link>`
 
 ## 5) Deploy Web App
 
@@ -70,8 +71,8 @@ In your Slack App settings:
 
 Create commands pointing to the Web App URL:
 
-- `/learn`, `/submit`, `/progress`, `/courses`, `/help`, `/cert`
-- `/enroll`, `/unenroll`, `/onboard`, `/offboard`, `/report`, `/gaps`, `/backup`, `/mix`, `/media`
+- `/learn`, `/submit`, `/progress`, `/courses`, `/help`
+- `/enroll`, `/enrol`, `/unenroll`, `/unenrol`, `/onboard`, `/offboard`, `/report`, `/gaps`, `/backup`, `/mix`, `/media`, `/cert`, `/startlesson`, `/stoplesson`
 
 ### Event Subscriptions
 
@@ -96,13 +97,13 @@ Ensure bot token has scopes required by your implemented Slack APIs, such as:
 
 Install/reinstall app to workspace after scope changes.
 
-## 7) Create Queue Trigger
+## 7) Manual Lesson Trigger (No Time-based Trigger)
 
-In Apps Script editor, run once:
+No time-based trigger is required in this deployment.
 
-- `setupTrigger()`
-
-This installs a time-based trigger to execute `processQueuedPipeline()` every minute.
+- Use `/startlesson` to enable learner lesson execution.
+- Use `/stoplesson` to pause learner lesson execution.
+- Queue processing runs inline from incoming Slack requests (no scheduled loop).
 
 ## 8) Verify End-to-End
 
@@ -115,16 +116,14 @@ This installs a time-based trigger to execute `processQueuedPipeline()` every mi
 ## 9) Troubleshooting
 
 
-### Trigger setup checklist
+### Manual processing checklist
 
-If queue jobs are not processing, verify trigger setup exactly:
+If queue jobs are not processing in manual mode:
 
-1. Open Apps Script -> Triggers (clock icon).
-2. Confirm there is a trigger for function `processQueuedPipeline`.
-3. Event source: **Time-driven**.
-4. Type: **Minutes timer**.
-5. Interval: **Every 1 minute**.
-6. If missing, run `setupTrigger()` once from the editor and re-check Triggers.
+1. Confirm Slack requests are reaching your current Web App deployment URL.
+2. Confirm `doPost` is executing successfully in Apps Script execution logs.
+3. Confirm `Queue` rows are being appended with `PENDING` and then processed inline.
+4. Ensure lesson access is enabled via `/startlesson`.
 
 ### Invalid signature
 
@@ -173,3 +172,30 @@ If queue jobs are not processing, verify trigger setup exactly:
   - recurring handler errors
 - Periodically back up Sheets content.
 - Rotate API keys/tokens per security policy.
+
+
+## 11) Workflow Builder Auto-Enrol Setup
+
+1. In Slack Workflow Builder, create a workflow started by button/link.
+2. Add a *Send a web request* step targeting your Apps Script Web App URL.
+3. Send JSON payload like:
+
+```json
+{
+  "workflow_trigger": "enroll",
+  "source": "workflow_builder",
+  "user_id": "{{user.id}}",
+  "course_id": "COURSE_12M"
+}
+```
+
+4. Publish workflow and test with a Slack user.
+5. Confirm in `Learners` that user is created/enrolled and receives DM confirmation.
+
+
+## 12) AI Disabled Mode
+
+This deployment runs with Claude/Gemini execution disabled. Ensure users expect command-driven behavior rather than generated AI responses.
+
+
+Onboarding note: `/onboard @username` now auto-enrols into `COURSE_12M`, sets `Current Module` to `M0`, sends orientation DM, and delivers first available lesson automatically.

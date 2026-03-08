@@ -424,3 +424,38 @@ function ensureQueueSheet() {
 
   return sheet;
 }
+
+
+function getFirstLessonIdForModule(moduleId) {
+  var lessons = getAllRows(SHEET_LESSONS);
+  var idxLessonId = lessons.headers.indexOf('LessonID');
+  var idxModule = lessons.headers.indexOf('Module');
+  var idxStatus = lessons.headers.indexOf('Status');
+
+  var ids = [];
+  for (var i = 0; i < lessons.rows.length; i++) {
+    var r = lessons.rows[i];
+    if (String(r[idxModule]) === String(moduleId) && String(r[idxStatus]) === 'Ready') {
+      ids.push(String(r[idxLessonId]));
+    }
+  }
+  ids.sort();
+  return ids.length ? ids[0] : null;
+}
+
+function getFirstReadyLessonIdForCourse(courseId) {
+  var lessons = getAllRows(SHEET_LESSONS);
+  var idxLessonId = lessons.headers.indexOf('LessonID');
+  var idxCourse = lessons.headers.indexOf('Course');
+  var idxStatus = lessons.headers.indexOf('Status');
+
+  var ids = [];
+  for (var i = 0; i < lessons.rows.length; i++) {
+    var r = lessons.rows[i];
+    if (String(r[idxCourse]) === String(courseId) && String(r[idxStatus]) === 'Ready') {
+      ids.push(String(r[idxLessonId]));
+    }
+  }
+  ids.sort();
+  return ids.length ? ids[0] : null;
+}

@@ -44,6 +44,7 @@ function doPost(e) {
       response_url: e.parameter.response_url
     };
     appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
+    processQueuedPipeline();
     return ContentService
       .createTextOutput(JSON.stringify({ response_type: 'in_channel', text: '⏳ On it...' }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -55,10 +56,20 @@ function doPost(e) {
     const userId = body.user && body.user.id;
     if (action && userId) {
       appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
+      processQueuedPipeline();
     }
     return ContentService
       .createTextOutput('')
       .setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Step 6a - workflow builder enrollment webhook trigger
+  const workflowPayload = extractWorkflowEnrollPayload(body, e.parameter || {});
+  if (workflowPayload) {
+    appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }));
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true, message: 'Enrollment queued' }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
 
   // Step 6 - event_callback (app_mention, message.im, reaction_added)
@@ -67,6 +78,7 @@ function doPost(e) {
     const userId = event && (event.user || event.item_user);
     if (event) {
       appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }));
+      processQueuedPipeline();
     }
     return ContentService
       .createTextOutput('')
@@ -110,6 +122,8 @@ function processQueuedPipeline() {
           routeCommand(job.payload);
         } else if (job.kind === 'event') {
           routeEvent(job.payload);
+        } else if (job.kind === 'workflow_enroll') {
+          handleWorkflowEnroll(job.payload);
         } else if (job.kind === 'block_action') {
           const action = job.payload && job.payload.actions && job.payload.actions[0];
           if (action && action.value) {
@@ -153,17 +167,21 @@ function routeCommand(payload) {
     case '/submit': return agentQuizMaster(payload);
     case '/progress': return agentProgress(payload);
     case '/enroll': return adminOnly(payload, function() { return agentEnroll(payload); });
+    case '/enrol': return adminOnly(payload, function() { return agentEnroll(payload); });
     case '/unenroll': return adminOnly(payload, function() { return agentUnenroll(payload); });
+    case '/unenrol': return adminOnly(payload, function() { return agentUnenroll(payload); });
     case '/onboard': return adminOnly(payload, function() { return agentOnboard(payload); });
     case '/offboard': return adminOnly(payload, function() { return agentOffboard(payload); });
     case '/report': return adminOnly(payload, function() { return agentReport(payload); });
     case '/gaps': return adminOnly(payload, function() { return agentGaps(payload); });
     case '/backup': return adminOnly(payload, function() { return agentBackup(payload); });
-    case '/cert': return agentCert(payload);
+    case '/cert': return adminOnly(payload, function() { return agentCert(payload); });
     case '/courses': return agentCourses(payload);
     case '/help': return agentHelp(payload);
     case '/mix': return adminOnly(payload, function() { return agentMix(payload); });
     case '/media': return adminOnly(payload, function() { return agentMedia(payload); });
+    case '/startlesson': return adminOnly(payload, function() { return agentStartLesson(payload); });
+    case '/stoplesson': return adminOnly(payload, function() { return agentStopLesson(payload); });
     default: return postDM(payload.user_id, 'Unknown command.');
   }
 }
@@ -183,11 +201,14 @@ function routeEvent(event) {
   }
 }
 
-function setupTrigger() {
-  ScriptApp.newTrigger('processQueuedPipeline')
-    .timeBased()
-    .everyMinutes(1)
-    .create();
+function startLessonTrigger() {
+  setLessonTriggerActive(true);
+  Logger.log('Lesson trigger started (manual mode).');
+}
+
+function stopLessonTrigger() {
+  setLessonTriggerActive(false);
+  Logger.log('Lesson trigger stopped (manual mode).');
 }
 
 function parseIncomingBody(raw, type) {
@@ -233,4 +254,31 @@ function parseFormEncoded(raw) {
     out[key] = val;
   });
   return out;
+}
+
+
+function extractWorkflowEnrollPayload(body, params) {
+  const b = body || {};
+  const p = params || {};
+
+  const userId =
+    b.user_id ||
+    (b.user && b.user.id) ||
+    b.slack_user_id ||
+    (b.trigger && b.trigger.user_id) ||
+    p.user_id ||
+    p.slack_user_id ||
+    '';
+
+  const action = String(b.workflow_trigger || b.action || p.workflow_trigger || p.action || '').toLowerCase();
+  const source = String(b.source || p.source || '').toLowerCase();
+
+  const looksLikeWorkflow = action === 'enroll' || source === 'workflow_builder' || !!b.workflow || !!p.workflow;
+  if (!userId || !looksLikeWorkflow) return null;
+
+  return {
+    user_id: userId,
+    course_id: b.course_id || p.course_id || 'COURSE_12M',
+    source: 'workflow_builder'
+  };
 }

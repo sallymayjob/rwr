@@ -146,3 +146,47 @@ function buildReportBlocks(learnerRows, submissionRows, moduleRows) {
     }
   ];
 }
+
+
+function resolveSlackUserId(query) {
+  var q = String(query || '').trim();
+  if (!q) return '';
+
+  var mention = q.match(/^<@([A-Z0-9]+)>$/i);
+  if (mention) return mention[1];
+  if (/^U[A-Z0-9]+$/i.test(q)) return q;
+
+  q = q.replace(/^@/, '').toLowerCase();
+  var token = PROPS.getProperty('SLACK_BOT_TOKEN');
+  var cursor = '';
+
+  try {
+    do {
+      var url = SLACK_API_BASE + 'users.list?limit=200' + (cursor ? ('&cursor=' + encodeURIComponent(cursor)) : '');
+      var res = UrlFetchApp.fetch(url, {
+        method: 'get',
+        headers: { Authorization: 'Bearer ' + token },
+        muteHttpExceptions: true
+      });
+      if (res.getResponseCode() !== 200) break;
+      var data = JSON.parse(res.getContentText());
+      if (!data.ok || !data.members) break;
+
+      for (var i = 0; i < data.members.length; i++) {
+        var m = data.members[i];
+        var candidates = [
+          String(m.name || '').toLowerCase(),
+          String((m.profile && m.profile.display_name) || '').toLowerCase(),
+          String((m.profile && m.profile.real_name) || '').toLowerCase()
+        ];
+        if (candidates.indexOf(q) !== -1) return m.id;
+      }
+
+      cursor = (data.response_metadata && data.response_metadata.next_cursor) || '';
+    } while (cursor);
+  } catch (err) {
+    Logger.log('resolveSlackUserId error: ' + err);
+  }
+
+  return '';
+}
