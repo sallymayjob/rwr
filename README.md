@@ -86,9 +86,47 @@ Existing lesson properties continue to work.
 
 ## Queue trigger behavior
 
+## Curriculum database columns (Modules/Courses)
+
+Use **Ensure Curriculum Database Columns** from the custom menu to add these schema fields.
+
+### Modules sheet fields
+
+- `ModuleID`
+- `Module Number`
+- `Module Name`
+- `Module Description`
+- `CourseID`
+- `Course Title`
+- `Status`
+- `Difficulty Tier`
+- `Audience`
+- `Total Lessons`
+- `Week Range`
+- `Lesson Types`
+- `Focus Areas`
+- `Lesson IDs`
+- `Sample Topics`
+
+### Courses sheet fields
+
+- `CourseID`
+- `Course Title`
+- `Course Description`
+- `Start ModuleID`
+- `Start Module Name`
+- `Module IDs`
+- `Module Names`
+- `Total Modules`
+- `Total Lessons`
+- `Audience`
+- `Difficulty Range`
+- `Status`
+
 Slash/event queue processing now uses a one-shot time trigger for `processQueuedPipeline`.
 The trigger auto-cleans itself when no `PENDING`/`RUNNING` jobs remain, preventing perpetual executions when the queue is empty.
 If you need to force-stop all queue triggers immediately, run `stopQueuedPipelineLoop()`.
+Queue scheduling is debounced and non-blocking so slash command acknowledgement stays fast and avoids Slack `dispatch_failed` on slow trigger operations.
 
 ## Onboarding runtime behavior
 
@@ -128,6 +166,7 @@ If you need to force-stop all queue triggers immediately, run `stopQueuedPipelin
 - Reopen Step Modal
 - Reset Posted Status
 - Ensure Tracking Columns
+- Ensure Curriculum Database Columns
 - Test Slack Connection
 
 ## Testing checklist

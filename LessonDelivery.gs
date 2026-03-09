@@ -815,6 +815,7 @@ function onOpen() {
     .addItem('Reset Posted Status', 'menuResetOnboardingPostedStatus')
     .addSeparator()
     .addItem('Ensure Tracking Columns', 'menuEnsureTrackingColumns')
+    .addItem('Ensure Curriculum Database Columns', 'menuEnsureCurriculumDatabaseColumns')
     .addItem('Test Slack Connection', 'menuTestSlackConnection')
     .addToUi();
 }
@@ -856,6 +857,11 @@ function menuEnsureTrackingColumns() {
 
 function menuTestSlackConnection() {
   SpreadsheetApp.getUi().alert(JSON.stringify(testSlackConnection()));
+}
+
+function menuEnsureCurriculumDatabaseColumns() {
+  ensureCurriculumDatabaseColumns();
+  SpreadsheetApp.getUi().alert('Curriculum database columns ensured for Modules and Courses sheets.');
 }
 
 

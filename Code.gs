@@ -34,20 +34,27 @@ function doPost(e) {
   // Step 4 - for slash commands, body is form-encoded - read from e.parameter
   const command = e.parameter && e.parameter.command;
   if (command) {
-    const payload = {
-      command: command,
-      text: e.parameter.text || '',
-      user_id: e.parameter.user_id,
-      user_name: e.parameter.user_name,
-      channel_id: e.parameter.channel_id,
-      team_id: e.parameter.team_id,
-      response_url: e.parameter.response_url
-    };
-    appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
-    scheduleQueuedPipeline_();
-    return ContentService
-      .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
-      .setMimeType(ContentService.MimeType.JSON);
+    try {
+      const payload = {
+        command: command,
+        text: e.parameter.text || '',
+        user_id: e.parameter.user_id,
+        user_name: e.parameter.user_name,
+        channel_id: e.parameter.channel_id,
+        team_id: e.parameter.team_id,
+        response_url: e.parameter.response_url
+      };
+      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
+      scheduleQueuedPipeline_();
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    } catch (cmdErr) {
+      Logger.log('doPost slash command queue error: ' + cmdErr);
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⚠️ Command received but queue write failed. Please retry once.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
   }
 
   // Step 5 - Slack interactivity payloads (form-encoded payload JSON)
@@ -109,22 +116,25 @@ function scheduleQueuedPipeline_() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(3000)) return;
   try {
-    // Debounce trigger creation to avoid burst duplicate scheduling from concurrent webhooks.
+    // Keep slash-command ack path fast: do not wait on locks in webhook request path.
     var now = Date.now();
     var notBefore = Number(PROPS.getProperty('QUEUE_TRIGGER_NOT_BEFORE_MS') || 0);
     if (notBefore && now < notBefore) return;
 
-    // Always remove existing queue triggers first (including legacy recurring triggers),
-    // then create exactly one one-shot trigger.
-    clearQueuedPipelineTriggers_();
+    const triggers = ScriptApp.getProjectTriggers();
+    const exists = triggers.some(function(t) {
+      return t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline';
+    });
 
-    ScriptApp.newTrigger('processQueuedPipeline')
-      .timeBased()
-      .after(15 * 1000)
-      .create();
+    if (!exists) {
+      ScriptApp.newTrigger('processQueuedPipeline')
+        .timeBased()
+        .after(10 * 1000)
+        .create();
+      Logger.log('Scheduled one-shot processQueuedPipeline trigger (~10s).');
+    }
 
-    PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 12000));
-    Logger.log('Scheduled one-shot processQueuedPipeline trigger (~15s).');
+    PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 8000));
   } catch (err) {
     Logger.log('scheduleQueuedPipeline_ error: ' + err);
   } finally {
@@ -291,6 +301,7 @@ function processQueuedPipeline() {
         scheduleQueuedPipeline_();
       } else {
         clearQueuedPipelineTriggers_();
+        PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
       }
     } catch (cleanupErr) {
       Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);

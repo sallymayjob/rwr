@@ -7,6 +7,68 @@ function getAllRows(sheetName) {
   return { headers: headers, rows: rows, sheet: sheet };
 }
 
+function ensureSheetColumnsByName_(sheetName, requiredColumns) {
+  const sheet = SS.getSheetByName(sheetName);
+  if (!sheet) throw new Error('Missing sheet: ' + sheetName);
+
+  const lastCol = Math.max(1, sheet.getLastColumn());
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+    return String(h || '').trim();
+  });
+
+  var changed = false;
+  requiredColumns.forEach(function(col) {
+    if (headers.indexOf(col) === -1) {
+      headers.push(col);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  return headers;
+}
+
+function ensureCurriculumDatabaseColumns() {
+  const moduleColumns = [
+    'ModuleID',
+    'Module Number',
+    'Module Name',
+    'Module Description',
+    'CourseID',
+    'Course Title',
+    'Status',
+    'Difficulty Tier',
+    'Audience',
+    'Total Lessons',
+    'Week Range',
+    'Lesson Types',
+    'Focus Areas',
+    'Lesson IDs',
+    'Sample Topics'
+  ];
+
+  const courseColumns = [
+    'CourseID',
+    'Course Title',
+    'Course Description',
+    'Start ModuleID',
+    'Start Module Name',
+    'Module IDs',
+    'Module Names',
+    'Total Modules',
+    'Total Lessons',
+    'Audience',
+    'Difficulty Range',
+    'Status'
+  ];
+
+  ensureSheetColumnsByName_(SHEET_MODULES, moduleColumns);
+  ensureSheetColumnsByName_(SHEET_COURSES, courseColumns);
+}
+
 function rowToObj(headers, row) {
   const obj = {};
   for (let i = 0; i < headers.length; i++) obj[headers[i]] = row[i];
@@ -221,15 +283,33 @@ function syncModuleRollup(moduleId) {
     const lIdxStatus = lessons.headers.indexOf('Status');
 
     const lessonIds = [];
+    const lessonTypes = {};
+    const focusAreas = {};
+    const sampleTopics = [];
+    const audienceValues = {};
+    const difficultyValues = {};
     let published = 0;
     let drafts = 0;
     let needsRevision = 0;
+
+    const lIdxType = lessons.headers.indexOf('Type');
+    const lIdxFocus = lessons.headers.indexOf('Focus Area');
+    const lIdxTopic = lessons.headers.indexOf('Topic');
+    const lIdxAudience = lessons.headers.indexOf('Audience');
+    const lIdxDifficulty = lessons.headers.indexOf('Difficulty Tier');
 
     for (let j = 0; j < lessons.rows.length; j++) {
       const lr = lessons.rows[j];
       if (String(lr[lIdxModule]) === String(moduleId)) {
         const lid = String(lr[lIdxLessonId]);
         lessonIds.push(lid);
+
+        if (lIdxType >= 0 && lr[lIdxType]) lessonTypes[String(lr[lIdxType])] = true;
+        if (lIdxFocus >= 0 && lr[lIdxFocus]) focusAreas[String(lr[lIdxFocus])] = true;
+        if (lIdxAudience >= 0 && lr[lIdxAudience]) audienceValues[String(lr[lIdxAudience])] = true;
+        if (lIdxDifficulty >= 0 && lr[lIdxDifficulty]) difficultyValues[String(lr[lIdxDifficulty])] = true;
+        if (lIdxTopic >= 0 && lr[lIdxTopic] && sampleTopics.length < 5) sampleTopics.push(String(lr[lIdxTopic]));
+
         const st = String(lr[lIdxStatus]);
         if (st === 'Ready') published++;
         if (st === 'Draft' || st === 'SOP-5 Review') drafts++;
@@ -271,6 +351,7 @@ function syncModuleRollup(moduleId) {
     }
 
     setCol('Lessons', lessonIds.join('|'));
+    setCol('Lesson IDs', lessonIds.join('|'));
     setCol('Total Lessons', lessonIds.length);
     setCol('Published Lessons', published);
     setCol('Draft Lessons', drafts);
@@ -278,6 +359,11 @@ function syncModuleRollup(moduleId) {
     setCol('Avg QA Score', Number(avgQa.toFixed(2)));
     setCol('QA Pass Rate', passRate);
     setCol('Status', status);
+    setCol('Lesson Types', Object.keys(lessonTypes).join('|'));
+    setCol('Focus Areas', Object.keys(focusAreas).join('|'));
+    setCol('Sample Topics', sampleTopics.join('|'));
+    setCol('Audience', Object.keys(audienceValues).join('|'));
+    setCol('Difficulty Tier', Object.keys(difficultyValues).join('|'));
     setCol('Last Updated', new Date());
 
     SpreadsheetApp.flush();
@@ -307,13 +393,20 @@ function syncCourseRollup(courseId) {
     if (courseRowIndex < 0) return;
 
     const mIdxCourse = modules.headers.indexOf('Course');
+    const mIdxCourseId = modules.headers.indexOf('CourseID');
     const mIdxModuleId = modules.headers.indexOf('ModuleID');
+    const mIdxModuleName = modules.headers.indexOf('Module Name');
     const mIdxTotal = modules.headers.indexOf('Total Lessons');
     const mIdxPublished = modules.headers.indexOf('Published Lessons');
     const mIdxQa = modules.headers.indexOf('Avg QA Score');
     const mIdxLearners = modules.headers.indexOf('Learners');
+    const mIdxAudience = modules.headers.indexOf('Audience');
+    const mIdxDifficulty = modules.headers.indexOf('Difficulty Tier');
 
     const moduleIds = [];
+    const moduleNames = [];
+    const audiences = {};
+    const difficulties = {};
     let totalLessons = 0;
     let published = 0;
     let qaSum = 0;
@@ -322,13 +415,18 @@ function syncCourseRollup(courseId) {
 
     for (let j = 0; j < modules.rows.length; j++) {
       const row = modules.rows[j];
-      if (String(row[mIdxCourse]) === String(courseId)) {
+      const moduleCourse = mIdxCourse >= 0 ? String(row[mIdxCourse]) : '';
+      const moduleCourseId = mIdxCourseId >= 0 ? String(row[mIdxCourseId]) : '';
+      if (moduleCourse === String(courseId) || moduleCourseId === String(courseId)) {
         moduleIds.push(String(row[mIdxModuleId]));
+        if (mIdxModuleName >= 0 && row[mIdxModuleName]) moduleNames.push(String(row[mIdxModuleName]));
         totalLessons += Number(row[mIdxTotal] || 0);
         published += Number(row[mIdxPublished] || 0);
         const qaVal = Number(row[mIdxQa]);
         if (!isNaN(qaVal)) { qaSum += qaVal; qaCount++; }
         learners += Number(row[mIdxLearners] || 0);
+        if (mIdxAudience >= 0 && row[mIdxAudience]) audiences[String(row[mIdxAudience])] = true;
+        if (mIdxDifficulty >= 0 && row[mIdxDifficulty]) difficulties[String(row[mIdxDifficulty])] = true;
       }
     }
 
@@ -341,13 +439,20 @@ function syncCourseRollup(courseId) {
     }
 
     setCourseCol('Modules', moduleIds.join('|'));
+    setCourseCol('Module IDs', moduleIds.join('|'));
+    setCourseCol('Module Names', moduleNames.join('|'));
     setCourseCol('Total Months', moduleIds.length);
+    setCourseCol('Total Modules', moduleIds.length);
     setCourseCol('Total Lessons', totalLessons);
     setCourseCol('Published Lessons', published);
     setCourseCol('Completion Rate', completionRate);
     setCourseCol('Avg QA Score', Number(avgQa.toFixed(2)));
     setCourseCol('Last Updated', new Date());
     setCourseCol('Learners', learners);
+    setCourseCol('Audience', Object.keys(audiences).join('|'));
+    setCourseCol('Difficulty Range', Object.keys(difficulties).join('|'));
+    setCourseCol('Start ModuleID', moduleIds.length ? moduleIds[0] : '');
+    setCourseCol('Start Module Name', moduleNames.length ? moduleNames[0] : '');
     setCourseCol('Status', completionRate === 100 ? 'Ready' : 'In Progress');
 
     SpreadsheetApp.flush();
