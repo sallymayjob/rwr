@@ -6,6 +6,8 @@ This project delivers lessons from a CSV-imported Google Sheet to Slack sequenti
 
 Google Sheets → Apps Script → Slack Bot API (`chat.postMessage`) → Slack DM/Channel.
 
+Slash command `/learn` routes into this delivery flow and posts the next sequential lesson to the requesting learner's DM.
+
 ## Source Data
 
 Import `lesson_slack_threads_filled_from_lessons.csv` into a sheet.

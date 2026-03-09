@@ -93,14 +93,14 @@ function getNextLesson() {
   return null;
 }
 
-function postLessonToSlack(lesson) {
+function postLessonToSlack(lesson, channelOverride) {
   const cfg = getConfig();
   if (!cfg.SLACK_BOT_TOKEN) throw new Error('Missing SLACK_BOT_TOKEN in Script Properties.');
 
   const text = String(lesson['Slack Thread Text'] || '');
   if (!text.trim()) throw new Error('Empty Slack Thread Text for lesson ' + lesson['LessonID']);
 
-  const channel = String(lesson['Slack Channel'] || cfg.DEFAULT_CHANNEL || '').trim();
+  const channel = String(channelOverride || lesson['Slack Channel'] || cfg.DEFAULT_CHANNEL || '').trim();
   if (!channel) throw new Error('Missing Slack channel. Set DEFAULT_CHANNEL or Slack Channel column value.');
 
   if (cfg.DRY_RUN) {
@@ -180,8 +180,9 @@ function postNextLesson() {
     throw new Error('Another posting process is running. Try again in a few seconds.');
   }
 
+  let lesson = null;
   try {
-    const lesson = getNextLesson();
+    lesson = getNextLesson();
     if (!lesson) {
       Logger.log('No unposted lessons found.');
       return { ok: true, posted: false, message: 'No unposted lessons found.' };
@@ -239,6 +240,48 @@ function postLessonById(lessonId) {
   }
 
   return postLessonInternal_(lesson);
+}
+
+
+
+function postNextLessonForUser(userId) {
+  const targetUser = String(userId || '').trim();
+  if (!targetUser) throw new Error('userId is required for postNextLessonForUser.');
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    throw new Error('Another posting process is running. Try again in a few seconds.');
+  }
+
+  let lesson = null;
+  try {
+    lesson = getNextLesson();
+    if (!lesson) {
+      return postDM(targetUser, 'You are up to date. No pending lesson.');
+    }
+
+    const dmChannel = openDM(targetUser);
+    if (!dmChannel) throw new Error('Could not open DM channel for user ' + targetUser);
+
+    const response = postLessonToSlack(lesson, dmChannel);
+    markLessonPosted(lesson.__rowIndex, response);
+
+    return {
+      ok: true,
+      posted: true,
+      lesson_id: lesson['LessonID'],
+      row_index: lesson.__rowIndex,
+      ts: response.ts || '',
+      channel: response.channel || dmChannel
+    };
+  } catch (err) {
+    if (typeof lesson !== 'undefined' && lesson && lesson.__rowIndex) {
+      markLessonError(lesson.__rowIndex, err.message || err);
+    }
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function onOpen() {

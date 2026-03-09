@@ -114,14 +114,9 @@ function agentTutor(payload) {
     return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
-  const lessonId = getCurrentLessonId(learner);
-  if (!lessonId) return postDM(payload.user_id, 'You are up to date. No pending lesson in your current module.');
-
-  const thread = getSlackThread(lessonId);
-  if (!thread) return postDM(payload.user_id, 'No lesson found for ' + lessonId + '. Contact your administrator.');
-
-  const blocks = buildLessonBlocks(thread['Slack Thread Text'], lessonId, payload.user_id, learner._rowIndex);
-  return postDM(payload.user_id, 'Here is your next lesson.', blocks);
+  const result = postNextLessonForUser(payload.user_id);
+  if (result && (result.posted || result.ok)) return result;
+  return postDM(payload.user_id, 'You are up to date. No pending lesson.');
 }
 
 function agentQuizMaster(payload) {
@@ -257,8 +252,9 @@ function agentUnenroll(payload) {
 
 function agentOnboard(payload) {
   var rawTarget = String((payload.text || '').trim() || payload.user_id);
-  var targetUser = resolveSlackUserId(rawTarget) || rawTarget;
-  if (!/^U[A-Z0-9]+$/i.test(targetUser)) {
+  var firstToken = rawTarget.split(/\s+/)[0] || rawTarget;
+  var targetUser = resolveSlackUserId(firstToken) || resolveSlackUserId(rawTarget) || firstToken;
+  if (!/^[UW][A-Z0-9]+$/i.test(targetUser)) {
     return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
   }
 
