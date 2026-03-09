@@ -44,9 +44,9 @@ function doPost(e) {
       response_url: e.parameter.response_url
     };
     appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
-    processQueuedPipeline();
+    scheduleQueuedPipeline_();
     return ContentService
-      .createTextOutput(JSON.stringify({ response_type: 'in_channel', text: '⏳ On it...' }))
+      .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -56,7 +56,7 @@ function doPost(e) {
     const userId = body.user && body.user.id;
     if (action && userId) {
       appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
-      processQueuedPipeline();
+      scheduleQueuedPipeline_();
     }
     return ContentService
       .createTextOutput('')
@@ -67,6 +67,7 @@ function doPost(e) {
   const workflowPayload = extractWorkflowEnrollPayload(body, e.parameter || {});
   if (workflowPayload) {
     appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }));
+    scheduleQueuedPipeline_();
     return ContentService
       .createTextOutput(JSON.stringify({ ok: true, message: 'Enrollment queued' }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -78,7 +79,7 @@ function doPost(e) {
     const userId = event && (event.user || event.item_user);
     if (event) {
       appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }));
-      processQueuedPipeline();
+      scheduleQueuedPipeline_();
     }
     return ContentService
       .createTextOutput('')
@@ -91,10 +92,33 @@ function doPost(e) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+
+function scheduleQueuedPipeline_() {
+  try {
+    const triggers = ScriptApp.getProjectTriggers();
+    const exists = triggers.some(function(t) {
+      return t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline';
+    });
+
+    if (!exists) {
+      ScriptApp.newTrigger('processQueuedPipeline')
+        .timeBased()
+        .everyMinutes(1)
+        .create();
+      Logger.log('Created time-based trigger for processQueuedPipeline (every 1 minute).');
+    }
+  } catch (err) {
+    Logger.log('scheduleQueuedPipeline_ error: ' + err);
+  }
+}
+
 function processQueuedPipeline() {
   const start = Date.now();
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return;
+
+  const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
+  const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
 
   try {
     ensureQueueSheet();
@@ -104,16 +128,32 @@ function processQueuedPipeline() {
     const idxPayload = headers.indexOf('Payload_Json');
     const idxStatus = headers.indexOf('Status');
 
-    const toRun = [];
-    for (let i = 0; i < rows.length; i++) {
-      if (String(rows[i][idxStatus]) === 'PENDING') {
-        rows[i][idxStatus] = 'RUNNING';
-        toRun.push(i);
-      }
+    if (idxPayload === -1 || idxStatus === -1) {
+      throw new Error('Queue sheet headers are invalid. Expected Payload_Json and Status.');
     }
 
-    for (let j = 0; j < toRun.length; j++) {
-      const rowIdx = toRun[j];
+    const candidates = [];
+    for (let i = 0; i < rows.length; i++) {
+      const status = String(rows[i][idxStatus] || '').trim();
+      if (status === 'PENDING' || status === 'RUNNING') {
+        candidates.push(i);
+      }
+      if (candidates.length >= batchLimit) break;
+    }
+
+    let processed = 0;
+    for (let j = 0; j < candidates.length; j++) {
+      if (Date.now() - start >= maxRuntimeMs) {
+        Logger.log('processQueuedPipeline time budget reached; stopping early. processed=' + processed);
+        break;
+      }
+
+      const rowIdx = candidates[j];
+      const sheetRow = rowIdx + 2;
+
+      // Mark RUNNING per row before work so stale work can be retried on next run.
+      data.sheet.getRange(sheetRow, idxStatus + 1).setValue('RUNNING');
+
       try {
         const payloadJson = rows[rowIdx][idxPayload];
         const job = JSON.parse(payloadJson || '{}');
@@ -138,29 +178,26 @@ function processQueuedPipeline() {
             }
           }
         } else {
-          Logger.log('Unknown queue kind at row ' + (rowIdx + 2));
+          Logger.log('Unknown queue kind at row ' + sheetRow);
         }
 
-        rows[rowIdx][idxStatus] = 'DONE';
+        data.sheet.getRange(sheetRow, idxStatus + 1).setValue('DONE');
       } catch (errJob) {
-        Logger.log('Queue row error ' + (rowIdx + 2) + ': ' + errJob);
-        rows[rowIdx][idxStatus] = 'ERROR';
+        Logger.log('Queue row error ' + sheetRow + ': ' + errJob);
+        data.sheet.getRange(sheetRow, idxStatus + 1).setValue('ERROR');
       }
-    }
 
-    if (rows.length) {
-      data.sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+      processed++;
     }
 
     SpreadsheetApp.flush();
-    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, jobs=' + toRun.length);
+    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, processed=' + processed + ', candidates=' + candidates.length);
   } catch (err) {
     Logger.log('processQueuedPipeline error: ' + err);
   } finally {
     lock.releaseLock();
   }
 }
-
 function routeCommand(payload) {
   switch (payload.command) {
     case '/learn': return agentTutor(payload);

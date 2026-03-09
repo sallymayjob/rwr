@@ -67,6 +67,8 @@ Configure in Apps Script → Project Settings → Script Properties:
 - `DEFAULT_ONBOARDING_CHANNEL`
 - `DRY_RUN` (`true` or `false`)
 - `BATCH_LIMIT` (default `25`)
+- `QUEUE_BATCH_LIMIT` (optional, default `15`)
+- `QUEUE_MAX_RUNTIME_MS` (optional, default `240000`)
 
 Backward compatibility:
 
@@ -77,8 +79,11 @@ Backward compatibility:
 
 - Install Slack app to workspace.
 - Add `chat:write` scope.
+- Optional (recommended): `users:read` if you want profile name/email enrichment during onboarding.
 - Use bot token in `SLACK_BOT_TOKEN`.
 - If using incoming events/slash commands in other files, keep existing Slack Events setup.
+- Slash commands are queued immediately and processed asynchronously by `processQueuedPipeline` via a time-based trigger (auto-created if missing).
+- Queue worker is time-boxed and batched to prevent Apps Script execution timeouts; it resumes remaining jobs on the next trigger run.
 
 ## How to Run
 
