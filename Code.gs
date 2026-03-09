@@ -34,30 +34,49 @@ function doPost(e) {
   // Step 4 - for slash commands, body is form-encoded - read from e.parameter
   const command = e.parameter && e.parameter.command;
   if (command) {
-    const payload = {
-      command: command,
-      text: e.parameter.text || '',
-      user_id: e.parameter.user_id,
-      user_name: e.parameter.user_name,
-      channel_id: e.parameter.channel_id,
-      team_id: e.parameter.team_id,
-      response_url: e.parameter.response_url
-    };
-    appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
-    scheduleQueuedPipeline_();
+    try {
+      const payload = {
+        command: command,
+        text: e.parameter.text || '',
+        user_id: e.parameter.user_id,
+        user_name: e.parameter.user_name,
+        channel_id: e.parameter.channel_id,
+        team_id: e.parameter.team_id,
+        response_url: e.parameter.response_url
+      };
+      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
+      scheduleQueuedPipeline_();
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    } catch (cmdErr) {
+      Logger.log('doPost slash command queue error: ' + cmdErr);
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⚠️ Command received but queue write failed. Please retry once.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  // Step 5 - Slack interactivity payloads (form-encoded payload JSON)
+  var interactionPayload = null;
+  if (e.parameter && e.parameter.payload) {
+    try {
+      interactionPayload = JSON.parse(e.parameter.payload);
+    } catch (ignore) {
+      interactionPayload = null;
+    }
+  }
+
+  if (interactionPayload) {
+    handleSlackInteraction(interactionPayload);
     return ContentService
-      .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
+      .createTextOutput(JSON.stringify({ response_action: 'clear' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // Step 5 - block_actions (button clicks)
-  if (body.type === 'block_actions') {
-    const action = body.actions && body.actions[0];
-    const userId = body.user && body.user.id;
-    if (action && userId) {
-      appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
-      scheduleQueuedPipeline_();
-    }
+  // Step 5b - block_actions arriving as JSON
+  if (body.type === 'block_actions' || body.type === 'view_submission') {
+    handleSlackInteraction(body);
     return ContentService
       .createTextOutput('')
       .setMimeType(ContentService.MimeType.TEXT);
@@ -95,6 +114,11 @@ function doPost(e) {
 
 function scheduleQueuedPipeline_() {
   try {
+    // Keep slash-command ack path fast: do not wait on locks in webhook request path.
+    var now = Date.now();
+    var notBefore = Number(PROPS.getProperty('QUEUE_TRIGGER_NOT_BEFORE_MS') || 0);
+    if (notBefore && now < notBefore) return;
+
     const triggers = ScriptApp.getProjectTriggers();
     const exists = triggers.some(function(t) {
       return t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline';
@@ -103,15 +127,33 @@ function scheduleQueuedPipeline_() {
     if (!exists) {
       ScriptApp.newTrigger('processQueuedPipeline')
         .timeBased()
-        .everyMinutes(1)
+        .after(10 * 1000)
         .create();
-      Logger.log('Created time-based trigger for processQueuedPipeline (every 1 minute).');
+      Logger.log('Scheduled one-shot processQueuedPipeline trigger (~10s).');
     }
+
+    PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 8000));
   } catch (err) {
     Logger.log('scheduleQueuedPipeline_ error: ' + err);
   }
 }
 
+
+function clearQueuedPipelineTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+
+function stopQueuedPipelineLoop() {
+  clearQueuedPipelineTriggers_();
+  PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+  Logger.log('All processQueuedPipeline triggers removed and debounce reset.');
+}
 
 function normalizeCommandText_(text) {
   return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -138,6 +180,24 @@ function shouldSkipDuplicateCommand_(payload) {
     return false;
   } catch (err) {
     Logger.log('shouldSkipDuplicateCommand_ error: ' + err);
+    return false;
+  }
+}
+
+
+function hasPendingQueueJobs_() {
+  try {
+    ensureQueueSheet();
+    const data = getAllRows(SHEET_QUEUE);
+    const idxStatus = data.headers.indexOf('Status');
+    if (idxStatus === -1) return false;
+    for (let i = 0; i < data.rows.length; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim();
+      if (status === 'PENDING' || status === 'RUNNING') return true;
+    }
+    return false;
+  } catch (err) {
+    Logger.log('hasPendingQueueJobs_ error: ' + err);
     return false;
   }
 }
@@ -229,6 +289,16 @@ function processQueuedPipeline() {
   } catch (err) {
     Logger.log('processQueuedPipeline error: ' + err);
   } finally {
+    try {
+      if (hasPendingQueueJobs_()) {
+        scheduleQueuedPipeline_();
+      } else {
+        clearQueuedPipelineTriggers_();
+        PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+      }
+    } catch (cleanupErr) {
+      Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);
+    }
     lock.releaseLock();
   }
 }

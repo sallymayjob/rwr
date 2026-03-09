@@ -14,6 +14,8 @@ function getConfig() {
     ONBOARDING_SHEET_NAME: PROPS.getProperty('ONBOARDING_SHEET_NAME') || 'onboarding_workflow_filled_slack_messages',
     DEFAULT_LESSON_CHANNEL: PROPS.getProperty('DEFAULT_LESSON_CHANNEL') || PROPS.getProperty('DEFAULT_CHANNEL') || '',
     DEFAULT_ONBOARDING_CHANNEL: PROPS.getProperty('DEFAULT_ONBOARDING_CHANNEL') || '',
+    SLACK_SIGNING_SECRET: PROPS.getProperty('SLACK_SIGNING_SECRET') || '',
+    WEBAPP_URL: PROPS.getProperty('WEBAPP_URL') || '',
     DRY_RUN: dryRunProp === 'true',
     BATCH_LIMIT: isNaN(batchLimit) || batchLimit < 1 ? 25 : batchLimit
   };
@@ -95,7 +97,51 @@ function ensureLessonTrackingColumns() {
 
 function ensureOnboardingTrackingColumns() {
   const sheet = getOnboardingSheet();
-  return ensureColumns(sheet, ['Posted Status', 'Posted At', 'Slack TS', 'Slack Channel', 'Completed Status', 'Error Log']);
+  return ensureColumns(sheet, [
+    'Step ID',
+    'Posted Status',
+    'Posted At',
+    'Slack TS',
+    'Slack Channel',
+    'Modal Status',
+    'Modal Opened At',
+    'Submitted At',
+    'Completed Status',
+    'Completed By',
+    'Notes / Response',
+    'Error Log'
+  ]);
+}
+
+function generateStepIdsIfMissing() {
+  const sheet = getOnboardingSheet();
+  const meta = ensureOnboardingTrackingColumns();
+  const rows = buildRows_(sheet, meta.headers);
+  const existing = {};
+
+  rows.forEach(function(row) {
+    const id = String(row['Step ID'] || '').trim();
+    if (id) existing[id] = true;
+  });
+
+  rows.forEach(function(row) {
+    const currentId = String(row['Step ID'] || '').trim();
+    if (currentId) return;
+
+    const taskLabel = String(row['Task / Checklist Step'] || row['Task'] || row['Checklist Step'] || '').trim();
+    const base = taskLabel
+      ? taskLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+      : 'row-' + row.__rowIndex;
+    var candidate = 'step-' + base + '-' + row.__rowIndex;
+    var seq = 1;
+    while (existing[candidate]) {
+      seq++;
+      candidate = 'step-' + base + '-' + row.__rowIndex + '-' + seq;
+    }
+
+    existing[candidate] = true;
+    safeCellWrite(sheet, row.__rowIndex, meta.map['Step ID'], candidate);
+  });
 }
 
 function ensureTrackingColumns() {
@@ -193,7 +239,9 @@ function validateOnboardingRow(row) {
 
 function getOnboardingRows() {
   const sheet = getOnboardingSheet();
-  const meta = ensureOnboardingTrackingColumns();
+  ensureOnboardingTrackingColumns();
+  generateStepIdsIfMissing();
+  const meta = getHeaderMap(sheet);
   if (meta.headers.indexOf('Slack Message') === -1) {
     throw new Error('Missing required onboarding column: Slack Message');
   }
@@ -216,7 +264,23 @@ function getOnboardingRows() {
 function getNextOnboardingRow() {
   const rows = getOnboardingRows();
   for (var i = 0; i < rows.length; i++) {
+    const completed = String(rows[i]['Completed Status'] || '').toLowerCase();
+    if (completed === 'complete' || completed === 'completed') continue;
     if (!isRowAlreadyPosted_(rows[i])) return rows[i];
+  }
+  return null;
+}
+
+function getNextOnboardingStep() {
+  return getNextOnboardingRow();
+}
+
+function getOnboardingStepById(stepId) {
+  const target = String(stepId || '').trim();
+  if (!target) return null;
+  const rows = getOnboardingRows();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i]['Step ID'] || '').trim() === target) return rows[i];
   }
   return null;
 }
@@ -275,6 +339,13 @@ function postSlackMessage(channel, text) {
   return callSlackApi('chat.postMessage', { channel: targetChannel, text: message });
 }
 
+function openSlackModal(triggerId, view) {
+  return callSlackApi('views.open', {
+    trigger_id: triggerId,
+    view: view
+  });
+}
+
 function resolveOnboardingChannel_(row) {
   const cfg = getConfig();
   const candidates = ['Slack Channel', 'Channel', 'Channel ID', 'Responsible Channel', 'Team Channel'];
@@ -304,8 +375,54 @@ function postLessonToSlack(row) {
 function postOnboardingMessage(row) {
   const channel = resolveOnboardingChannel_(row);
   if (!channel) throw new Error('Missing onboarding channel. Set DEFAULT_ONBOARDING_CHANNEL or a row channel field.');
-  const text = resolveOnboardingResponsibilityPrefix_(row) + buildOnboardingMessage(row);
-  return postSlackMessage(channel, text);
+  const text = buildOnboardingMessage(row);
+  const blocks = buildOnboardingBlocks(row);
+  return callSlackApi('chat.postMessage', { channel: channel, text: text, blocks: blocks });
+}
+
+function buildOnboardingBlocks(row) {
+  const text = String(row['Slack Message'] || '').trim();
+  const summary = String(row['Task / Checklist Step'] || row['Task'] || row['Checklist Step'] || '').trim();
+  const responsible = String(row['Responsible'] || row['Responsibility'] || row['Owner'] || row['Assignee'] || row['Responsible Team'] || '').trim();
+  const actionValue = JSON.stringify({
+    workflow: 'onboarding',
+    step_id: String(row['Step ID'] || ''),
+    row_index: row.__rowIndex,
+    channel: resolveOnboardingChannel_(row),
+    slack_ts: String(row['Slack TS'] || '')
+  });
+
+  const blocks = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: text }
+    }
+  ];
+
+  if (summary || responsible) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: '*Step:* ' + (summary || 'Onboarding Step') },
+        { type: 'mrkdwn', text: '*Responsible:* ' + (responsible || 'Unassigned') }
+      ]
+    });
+  }
+
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        action_id: 'onboarding_open_workflow',
+        text: { type: 'plain_text', text: 'Open Workflow' },
+        style: 'primary',
+        value: actionValue
+      }
+    ]
+  });
+
+  return blocks;
 }
 
 function markRowError(sheet, headers, rowIndex, errorMessage) {
@@ -336,7 +453,136 @@ function markOnboardingPosted(rowIndex, response) {
   safeCellWrite(sheet, rowIndex, meta.map['Posted At'], new Date());
   safeCellWrite(sheet, rowIndex, meta.map['Slack TS'], String(response.ts || ''));
   safeCellWrite(sheet, rowIndex, meta.map['Slack Channel'], String(response.channel || ''));
+  safeCellWrite(sheet, rowIndex, meta.map['Completed Status'], String(response.completed_status || 'Pending'));
   safeCellWrite(sheet, rowIndex, meta.map['Error Log'], '');
+}
+
+function buildOnboardingModal(row) {
+  const title = String(row['Task / Checklist Step'] || row['Task'] || row['Checklist Step'] || 'Onboarding Step').trim();
+  const responsible = String(row['Responsible'] || row['Responsibility'] || row['Owner'] || row['Assignee'] || row['Responsible Team'] || 'Unassigned').trim();
+  const meta = {
+    workflow: 'onboarding',
+    step_id: String(row['Step ID'] || ''),
+    row_index: row.__rowIndex,
+    channel: String(row['Slack Channel'] || resolveOnboardingChannel_(row) || ''),
+    message_ts: String(row['Slack TS'] || '')
+  };
+
+  return {
+    type: 'modal',
+    callback_id: 'onboarding_modal_submit',
+    private_metadata: JSON.stringify(meta),
+    title: { type: 'plain_text', text: 'Onboarding Step' },
+    submit: { type: 'plain_text', text: 'Submit' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: '*Step:* ' + title + '\n*Responsible:* ' + responsible }
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: '*Task Summary:*\n' + String(row['Slack Message'] || '') }
+      },
+      {
+        type: 'input',
+        block_id: 'status_block',
+        label: { type: 'plain_text', text: 'Completion status' },
+        element: {
+          type: 'static_select',
+          action_id: 'status_action',
+          options: [
+            { text: { type: 'plain_text', text: 'Pending' }, value: 'Pending' },
+            { text: { type: 'plain_text', text: 'Complete' }, value: 'Complete' },
+            { text: { type: 'plain_text', text: 'Needs Review' }, value: 'Needs Review' }
+          ]
+        }
+      },
+      {
+        type: 'input',
+        block_id: 'notes_block',
+        optional: true,
+        label: { type: 'plain_text', text: 'Notes / response' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'notes_action',
+          multiline: true,
+          placeholder: { type: 'plain_text', text: 'Add completion notes, confirmations, or blockers.' }
+        }
+      }
+    ]
+  };
+}
+
+function openOnboardingModal(triggerId, row) {
+  return openSlackModal(triggerId, buildOnboardingModal(row));
+}
+
+function updateOnboardingRowFromModal(rowIndex, submittedData) {
+  const sheet = getOnboardingSheet();
+  const meta = ensureOnboardingTrackingColumns();
+  safeCellWrite(sheet, rowIndex, meta.map['Modal Status'], String(submittedData.modal_status || 'Submitted'));
+  safeCellWrite(sheet, rowIndex, meta.map['Submitted At'], new Date());
+  safeCellWrite(sheet, rowIndex, meta.map['Completed Status'], String(submittedData.completed_status || 'Pending'));
+  safeCellWrite(sheet, rowIndex, meta.map['Completed By'], String(submittedData.completed_by || ''));
+  safeCellWrite(sheet, rowIndex, meta.map['Notes / Response'], String(submittedData.notes || ''));
+  safeCellWrite(sheet, rowIndex, meta.map['Error Log'], '');
+}
+
+function handleOnboardingButtonClick(payload) {
+  const action = payload.actions && payload.actions[0] || {};
+  const value = action.value ? JSON.parse(action.value) : {};
+  const row = (value.step_id && getOnboardingStepById(value.step_id)) || null;
+  const targetRow = row || getOnboardingRows().filter(function(r) { return r.__rowIndex === Number(value.row_index); })[0];
+  if (!targetRow) throw new Error('Could not resolve onboarding step for modal open.');
+
+  openOnboardingModal(payload.trigger_id, targetRow);
+
+  const sheet = getOnboardingSheet();
+  const meta = ensureOnboardingTrackingColumns();
+  safeCellWrite(sheet, targetRow.__rowIndex, meta.map['Modal Status'], 'Opened');
+  safeCellWrite(sheet, targetRow.__rowIndex, meta.map['Modal Opened At'], new Date());
+}
+
+function handleOnboardingModalSubmit(payload) {
+  const view = payload.view || {};
+  const metadata = view.private_metadata ? JSON.parse(view.private_metadata) : {};
+  const rowIndex = Number(metadata.row_index);
+  if (!rowIndex) throw new Error('Missing row index in modal metadata.');
+
+  const stateValues = view.state && view.state.values || {};
+  const statusOption = stateValues.status_block && stateValues.status_block.status_action && stateValues.status_block.status_action.selected_option;
+  const notesObj = stateValues.notes_block && stateValues.notes_block.notes_action;
+
+  updateOnboardingRowFromModal(rowIndex, {
+    modal_status: 'Submitted',
+    completed_status: statusOption ? statusOption.value : 'Pending',
+    completed_by: payload.user && payload.user.id || '',
+    notes: notesObj && notesObj.value || ''
+  });
+}
+
+function handleSlackInteraction(payload) {
+  if (!payload || !payload.type) return false;
+
+  if (payload.type === 'block_actions') {
+    const action = payload.actions && payload.actions[0];
+    if (action && action.action_id === 'onboarding_open_workflow') {
+      handleOnboardingButtonClick(payload);
+      return true;
+    }
+  }
+
+  if (payload.type === 'view_submission' && payload.view && payload.view.callback_id === 'onboarding_modal_submit') {
+    handleOnboardingModalSubmit(payload);
+    return true;
+  }
+
+  return false;
+}
+
+function postOnboardingStep(row) {
+  return postOnboardingInternal_(row);
 }
 
 function postLessonInternal_(row) {
@@ -564,8 +810,12 @@ function onOpen() {
     .addItem('Post Next Onboarding Step', 'menuPostNextOnboardingStep')
     .addItem('Post All Onboarding Steps', 'menuPostAllOnboardingSteps')
     .addItem('Post Onboarding Step By ID/Row', 'menuPostOnboardingByIdentifier')
+    .addItem('Generate Missing Step IDs', 'menuGenerateStepIds')
+    .addItem('Reopen Step Modal', 'menuReopenOnboardingModal')
+    .addItem('Reset Posted Status', 'menuResetOnboardingPostedStatus')
     .addSeparator()
     .addItem('Ensure Tracking Columns', 'menuEnsureTrackingColumns')
+    .addItem('Ensure Curriculum Database Columns', 'menuEnsureCurriculumDatabaseColumns')
     .addItem('Test Slack Connection', 'menuTestSlackConnection')
     .addToUi();
 }
@@ -607,4 +857,76 @@ function menuEnsureTrackingColumns() {
 
 function menuTestSlackConnection() {
   SpreadsheetApp.getUi().alert(JSON.stringify(testSlackConnection()));
+}
+
+function menuEnsureCurriculumDatabaseColumns() {
+  ensureCurriculumDatabaseColumns();
+  SpreadsheetApp.getUi().alert('Curriculum database columns ensured for Modules and Courses sheets.');
+}
+
+
+function reopenOnboardingStepModal(identifier) {
+  const row = resolveOnboardingRowByIdentifier_(identifier);
+  const triggerId = String(PROPS.getProperty('TEST_SLACK_TRIGGER_ID') || '').trim();
+  if (!triggerId) throw new Error('Set TEST_SLACK_TRIGGER_ID script property to use reopen modal from menu.');
+  return openOnboardingModal(triggerId, row);
+}
+
+function resetOnboardingPostedStatus(identifier) {
+  const row = resolveOnboardingRowByIdentifier_(identifier);
+  const sheet = getOnboardingSheet();
+  const meta = ensureOnboardingTrackingColumns();
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Posted Status'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Posted At'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Slack TS'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Modal Status'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Modal Opened At'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Submitted At'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Completed Status'], 'Pending');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Completed By'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Notes / Response'], '');
+  safeCellWrite(sheet, row.__rowIndex, meta.map['Error Log'], '');
+  return { ok: true, row_index: row.__rowIndex };
+}
+
+function resolveOnboardingRowByIdentifier_(id) {
+  const target = String(id || '').trim();
+  if (!target) throw new Error('Onboarding identifier is required.');
+  const rows = getOnboardingRows();
+  var row = null;
+  const numeric = Number(target);
+  if (!isNaN(numeric) && numeric >= 2) {
+    row = rows.filter(function(r) { return r.__rowIndex === numeric; })[0] || null;
+  }
+  if (!row) {
+    row = rows.filter(function(r) {
+      return String(r['Step ID'] || '').trim() === target ||
+        String(r['Task ID'] || '').trim() === target ||
+        String(r['Checklist Step ID'] || '').trim() === target ||
+        String(r['Task'] || '').trim() === target ||
+        String(r['Checklist Step'] || '').trim() === target ||
+        String(r['Task / Checklist Step'] || '').trim() === target;
+    })[0] || null;
+  }
+  if (!row) throw new Error('Onboarding step not found for identifier: ' + target);
+  return row;
+}
+
+function menuGenerateStepIds() {
+  generateStepIdsIfMissing();
+  SpreadsheetApp.getUi().alert('Missing Step IDs generated.');
+}
+
+function menuReopenOnboardingModal() {
+  const ui = SpreadsheetApp.getUi();
+  const resp = ui.prompt('Reopen Onboarding Modal', 'Enter row number or Step ID', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  SpreadsheetApp.getUi().alert(JSON.stringify(reopenOnboardingStepModal(resp.getResponseText())));
+}
+
+function menuResetOnboardingPostedStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const resp = ui.prompt('Reset Onboarding Step', 'Enter row number or Step ID', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  SpreadsheetApp.getUi().alert(JSON.stringify(resetOnboardingPostedStatus(resp.getResponseText())));
 }
