@@ -106,24 +106,48 @@ function doPost(e) {
 
 
 function scheduleQueuedPipeline_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(3000)) return;
   try {
-    const triggers = ScriptApp.getProjectTriggers();
-    const exists = triggers.some(function(t) {
-      return t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline';
-    });
+    // Debounce trigger creation to avoid burst duplicate scheduling from concurrent webhooks.
+    var now = Date.now();
+    var notBefore = Number(PROPS.getProperty('QUEUE_TRIGGER_NOT_BEFORE_MS') || 0);
+    if (notBefore && now < notBefore) return;
 
-    if (!exists) {
-      ScriptApp.newTrigger('processQueuedPipeline')
-        .timeBased()
-        .everyMinutes(1)
-        .create();
-      Logger.log('Created time-based trigger for processQueuedPipeline (every 1 minute).');
-    }
+    // Always remove existing queue triggers first (including legacy recurring triggers),
+    // then create exactly one one-shot trigger.
+    clearQueuedPipelineTriggers_();
+
+    ScriptApp.newTrigger('processQueuedPipeline')
+      .timeBased()
+      .after(15 * 1000)
+      .create();
+
+    PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 12000));
+    Logger.log('Scheduled one-shot processQueuedPipeline trigger (~15s).');
   } catch (err) {
     Logger.log('scheduleQueuedPipeline_ error: ' + err);
+  } finally {
+    lock.releaseLock();
   }
 }
 
+
+function clearQueuedPipelineTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+
+function stopQueuedPipelineLoop() {
+  clearQueuedPipelineTriggers_();
+  PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+  Logger.log('All processQueuedPipeline triggers removed and debounce reset.');
+}
 
 function normalizeCommandText_(text) {
   return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -154,10 +178,31 @@ function shouldSkipDuplicateCommand_(payload) {
   }
 }
 
+
+function hasPendingQueueJobs_() {
+  try {
+    ensureQueueSheet();
+    const data = getAllRows(SHEET_QUEUE);
+    const idxStatus = data.headers.indexOf('Status');
+    if (idxStatus === -1) return false;
+    for (let i = 0; i < data.rows.length; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim();
+      if (status === 'PENDING' || status === 'RUNNING') return true;
+    }
+    return false;
+  } catch (err) {
+    Logger.log('hasPendingQueueJobs_ error: ' + err);
+    return false;
+  }
+}
+
 function processQueuedPipeline() {
   const start = Date.now();
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return;
+  if (!lock.tryLock(5000)) {
+    scheduleQueuedPipeline_();
+    return;
+  }
 
   const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
   const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
@@ -241,6 +286,15 @@ function processQueuedPipeline() {
   } catch (err) {
     Logger.log('processQueuedPipeline error: ' + err);
   } finally {
+    try {
+      if (hasPendingQueueJobs_()) {
+        scheduleQueuedPipeline_();
+      } else {
+        clearQueuedPipelineTriggers_();
+      }
+    } catch (cleanupErr) {
+      Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);
+    }
     lock.releaseLock();
   }
 }

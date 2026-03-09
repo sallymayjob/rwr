@@ -84,6 +84,12 @@ Existing lesson properties continue to work.
 3. Who has access: **Anyone** (or org policy compatible with Slack callbacks).
 4. Copy deployment URL and use it in Slack Interactivity Request URL.
 
+## Queue trigger behavior
+
+Slash/event queue processing now uses a one-shot time trigger for `processQueuedPipeline`.
+The trigger auto-cleans itself when no `PENDING`/`RUNNING` jobs remain, preventing perpetual executions when the queue is empty.
+If you need to force-stop all queue triggers immediately, run `stopQueuedPipelineLoop()`.
+
 ## Onboarding runtime behavior
 
 ### 1) Post onboarding step
