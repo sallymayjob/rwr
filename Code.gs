@@ -50,14 +50,26 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // Step 5 - block_actions (button clicks)
-  if (body.type === 'block_actions') {
-    const action = body.actions && body.actions[0];
-    const userId = body.user && body.user.id;
-    if (action && userId) {
-      appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
-      scheduleQueuedPipeline_();
+  // Step 5 - Slack interactivity payloads (form-encoded payload JSON)
+  var interactionPayload = null;
+  if (e.parameter && e.parameter.payload) {
+    try {
+      interactionPayload = JSON.parse(e.parameter.payload);
+    } catch (ignore) {
+      interactionPayload = null;
     }
+  }
+
+  if (interactionPayload) {
+    handleSlackInteraction(interactionPayload);
+    return ContentService
+      .createTextOutput(JSON.stringify({ response_action: 'clear' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Step 5b - block_actions arriving as JSON
+  if (body.type === 'block_actions' || body.type === 'view_submission') {
+    handleSlackInteraction(body);
     return ContentService
       .createTextOutput('')
       .setMimeType(ContentService.MimeType.TEXT);
