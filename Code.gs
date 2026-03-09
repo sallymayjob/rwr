@@ -113,6 +113,8 @@ function doPost(e) {
 
 
 function scheduleQueuedPipeline_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(3000)) return;
   try {
     // Keep slash-command ack path fast: do not wait on locks in webhook request path.
     var now = Date.now();
@@ -135,6 +137,8 @@ function scheduleQueuedPipeline_() {
     PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 8000));
   } catch (err) {
     Logger.log('scheduleQueuedPipeline_ error: ' + err);
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -205,7 +209,10 @@ function hasPendingQueueJobs_() {
 function processQueuedPipeline() {
   const start = Date.now();
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return;
+  if (!lock.tryLock(5000)) {
+    scheduleQueuedPipeline_();
+    return;
+  }
 
   const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
   const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
