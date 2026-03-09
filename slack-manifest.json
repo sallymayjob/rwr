@@ -21,8 +21,8 @@
       {
         "command": "/submit",
         "url": "https://SCRIPT_WEB_APP_URL",
-        "description": "Submit lesson verification",
-        "usage_hint": "<lessonId> <evidence>",
+        "description": "Submit mission evidence by submit code",
+        "usage_hint": "<submit_code> <evidence>",
         "should_escape": false
       },
       {

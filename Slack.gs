@@ -67,7 +67,7 @@ function getUserInfo(userId) {
   };
 }
 
-function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex) {
+function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex, submitCode) {
   return [
     {
       type: 'section',
@@ -84,7 +84,8 @@ function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex) {
           value: JSON.stringify({
             lesson_id: lessonId,
             user_id: userId,
-            row_index: rowIndex
+            row_index: rowIndex,
+            submit_code: submitCode || ''
           })
         }
       ]

@@ -271,8 +271,12 @@ function processQueuedPipeline() {
             try {
               const value = JSON.parse(action.value);
               if (value.lesson_id && value.user_id) {
-                writeSubmission(value.lesson_id, value.user_id, null, 'slash_command');
-                updateLearnerProgress(value.user_id, value.lesson_id);
+                var delivery = getLessonDeliveryRow(value.lesson_id);
+                var submitCode = delivery ? String(delivery['Submit Code'] || '') : '';
+                var mission = getMissionBySubmitCode(submitCode);
+                var missionId = mission ? String(mission['MissionID'] || '') : '';
+                writeSubmission(value.lesson_id, value.user_id, '', 'block_action', missionId, submitCode, 'button_mark_complete');
+                updateLearnerProgress(value.user_id, value.lesson_id, missionId);
               }
             } catch (parseErr) {
               Logger.log('block_action parse error: ' + parseErr);
