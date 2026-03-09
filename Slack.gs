@@ -52,11 +52,18 @@ function postDM(userId, text, blocks) {
 }
 
 function getUserInfo(userId) {
-  const data = slackFetch('users.info', { user: userId });
-  if (!data.ok || !data.user) return null;
+  const target = String(userId || '').trim();
+  if (!target) return { name: '', email: '', lookup_error: 'missing_user_id' };
+
+  const data = slackFetch('users.info', { user: target });
+  if (!data.ok || !data.user) {
+    return { name: '', email: '', lookup_error: data && data.error ? data.error : 'users_info_failed' };
+  }
+
   return {
     name: data.user.real_name || data.user.name || '',
-    email: (data.user.profile && data.user.profile.email) || ''
+    email: (data.user.profile && data.user.profile.email) || '',
+    lookup_error: ''
   };
 }
 

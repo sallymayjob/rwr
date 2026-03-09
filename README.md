@@ -1,83 +1,120 @@
-# Slack LMS Sequential Lesson Delivery (Google Apps Script)
+# Slack Training + Onboarding Automation (Google Apps Script)
 
-This project delivers lessons from a CSV-imported Google Sheet to Slack sequentially using **Google Apps Script only**.
+This project runs entirely in:
 
-## Architecture
+Google Sheets → Google Apps Script → Slack Bot API
 
-Google Sheets → Apps Script → Slack Bot API (`chat.postMessage`) → Slack DM/Channel.
+It supports **two workflows in one Apps Script project**:
 
-Slash command `/learn` routes into this delivery flow and posts the next sequential lesson to the requesting learner's DM.
+1. **Lesson delivery workflow** from `lesson_slack_threads_filled_from_lessons`
+2. **Onboarding workflow** from `onboarding_workflow_filled_slack_messages`
 
-## Source Data
+## Required Sheets
 
-Import `lesson_slack_threads_filled_from_lessons.csv` into a sheet.
+Set sheet names through Script Properties (defaults shown):
 
-Required columns:
+- `LESSONS_SHEET_NAME` (default: `lesson_slack_threads_filled_from_lessons`)
+- `ONBOARDING_SHEET_NAME` (default: `onboarding_workflow_filled_slack_messages`)
+
+## Required Source Columns
+
+### Lessons sheet
 
 - `LessonID`
 - `Slack Thread Text`
-- `Submit Code`
-- `Topic`
 
-Optional source columns are supported and left unchanged.
+(Other lesson columns like `Submit Code` and `Topic` are preserved and can still exist.)
 
-The script auto-adds tracking columns if missing:
+### Onboarding sheet
+
+- `Slack Message`
+
+Optional routing fields supported when present:
+
+- `Slack Channel`, `Channel`, `Channel ID`, `Responsible Channel`, `Team Channel`
+- `Responsible`, `Responsibility`, `Owner`, `Assignee`, `Responsible Team`
+
+## Auto-created Tracking Columns
+
+The script auto-adds missing tracking columns.
+
+### Lessons tracking
 
 - `Posted Status`
 - `Posted At`
 - `Slack TS`
 - `Slack Channel`
-- `Lesson Order`
+- `Error Log`
+
+### Onboarding tracking
+
+- `Posted Status`
+- `Posted At`
+- `Slack TS`
+- `Slack Channel`
+- `Completed Status`
 - `Error Log`
 
 ## Script Properties
 
-Set these in **Project Settings → Script Properties**:
+Configure in Apps Script → Project Settings → Script Properties:
 
-- `SLACK_BOT_TOKEN` (required)
-- `DEFAULT_CHANNEL` (required unless row `Slack Channel` is populated)
-- `SHEET_NAME` (default: `lesson_slack_threads_filled_from_lessons`)
-- `DRY_RUN` (`true`/`false`, default `false`)
+- `SHEETS_ID` (Spreadsheet ID)
+- `SLACK_BOT_TOKEN` (Bot token)
+- `LESSONS_SHEET_NAME`
+- `ONBOARDING_SHEET_NAME`
+- `DEFAULT_LESSON_CHANNEL`
+- `DEFAULT_ONBOARDING_CHANNEL`
+- `DRY_RUN` (`true` or `false`)
 - `BATCH_LIMIT` (default `25`)
-- `SHEETS_ID` (required, target spreadsheet id)
+- `QUEUE_BATCH_LIMIT` (optional, default `15`)
+- `QUEUE_MAX_RUNTIME_MS` (optional, default `240000`)
+- `COMMAND_DEDUPE_TTL_MS` (optional, default `120000`)
 
-## Core Functions
+Backward compatibility:
 
-Implemented in `LessonDelivery.gs`:
+- `SHEET_NAME` is still read as a fallback for lessons.
+- `DEFAULT_CHANNEL` is still read as a fallback for lesson channel.
 
-- `getConfig()`
-- `getLessonSheet()`
-- `ensureTrackingColumns()`
-- `getLessons()`
-- `getNextLesson()`
-- `postLessonToSlack(lesson)`
-- `markLessonPosted(rowIndex, slackResponse)`
-- `markLessonError(rowIndex, errorMessage)`
-- `postNextLesson()`
-- `postAllLessons()`
-- `postLessonById(lessonId)`
+## Slack Setup
 
-## Menu
+- Install Slack app to workspace.
+- Add `chat:write` scope.
+- Optional (recommended): `users:read` if you want profile name/email enrichment during onboarding.
+- Use bot token in `SLACK_BOT_TOKEN`.
+- If using incoming events/slash commands in other files, keep existing Slack Events setup.
+- Slash commands are queued immediately and processed asynchronously by `processQueuedPipeline` via a time-based trigger (auto-created if missing).
+- Queue worker is time-boxed and batched to prevent Apps Script execution timeouts; it resumes remaining jobs on the next trigger run.
 
-When the sheet opens, a custom **Slack LMS** menu is added:
+## How to Run
+
+Use the custom menu: **Slack Automation**
+
+### Lesson flow
 
 - Post Next Lesson
 - Post All Lessons
-- Post Lesson by ID
-- Reset Post Status
+- Post Lesson By ID
+
+Behavior:
+
+- Sorted by parsed `LessonID` (`M##-W##-L##`)
+- Posts `Slack Thread Text` exactly as prepared
+- Prevents duplicates if `Posted Status` is set or `Slack TS` exists
+
+### Onboarding flow
+
+- Post Next Onboarding Step
+- Post All Onboarding Steps
+- Post Onboarding Step By ID/Row
+
+Behavior:
+
+- Sequential by sheet row order
+- Posts `Slack Message` exactly as prepared (with optional owner prefix)
+- Prevents duplicates if `Posted Status` is set or `Slack TS` exists
+
+### Utilities
+
+- Ensure Tracking Columns
 - Test Slack Connection
-
-## Delivery Rules
-
-- Lessons are ordered by parsed `LessonID` (`M##-W##-L##`).
-- A lesson is posted only when:
-  - `Posted Status != TRUE`, and
-  - `Slack TS` is empty.
-- Message text is sent **exactly** from `Slack Thread Text`.
-- Errors are logged to `Error Log` and `Logger`.
-
-## Notes
-
-- Uses Slack Web API endpoint `chat.postMessage`.
-- Stores `ts` and `channel` from Slack response.
-- Duplicate posting is blocked by status/timestamp checks.

@@ -250,20 +250,61 @@ function agentUnenroll(payload) {
   return postDM(payload.user_id, 'Learner not found.');
 }
 
+
+function ensureLearnerColumnsForOnboarding_() {
+  var sheet = SS.getSheetByName(SHEET_LEARNERS);
+  if (!sheet) throw new Error('Missing sheet: ' + SHEET_LEARNERS);
+
+  var required = ['UserID', 'Name', 'Email', 'Enrolled Course', 'Current Module', 'Progress (%)', 'Status', 'Joined Date', 'Lesson Submissions'];
+  var lastCol = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) { return String(h || '').trim(); });
+  var changed = false;
+
+  required.forEach(function(col) {
+    if (headers.indexOf(col) === -1) {
+      headers.push(col);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  return headers;
+}
+
+function resolveOnboardTargetUser_(rawTarget, fallbackUserId) {
+  var input = String(rawTarget || '').trim();
+  if (!input) return String(fallbackUserId || '').trim();
+
+  var firstToken = input.split(/\s+/)[0] || input;
+  var mentionMatch = firstToken.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]+)?>$/i);
+  if (mentionMatch) return mentionMatch[1];
+  if (/^[UW][A-Z0-9]+$/i.test(firstToken)) return firstToken;
+
+  var resolved = resolveSlackUserId(firstToken) || resolveSlackUserId(input);
+  if (resolved) return resolved;
+
+  return String(fallbackUserId || '').trim();
+}
+
 function agentOnboard(payload) {
-  var rawTarget = String((payload.text || '').trim() || payload.user_id);
-  var firstToken = rawTarget.split(/\s+/)[0] || rawTarget;
-  var targetUser = resolveSlackUserId(firstToken) || resolveSlackUserId(rawTarget) || firstToken;
+  var rawTarget = String((payload.text || '').trim());
+  var targetUser = resolveOnboardTargetUser_(rawTarget, payload.user_id);
   if (!/^[UW][A-Z0-9]+$/i.test(targetUser)) {
     return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
   }
 
-  var info = getUserInfo(targetUser);
-  if (!info) return postDM(payload.user_id, 'Unable to fetch Slack user profile.');
+  var info = getUserInfo(targetUser) || { name: '', email: '', lookup_error: 'users_info_failed' };
+  if (info.lookup_error) {
+    Logger.log('agentOnboard warning: users.info failed for ' + targetUser + ' with error=' + info.lookup_error);
+  }
 
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    ensureLearnerColumnsForOnboarding_();
     var data = getAllRows(SHEET_LEARNERS);
     var idxUser = data.headers.indexOf('UserID');
     var idxName = data.headers.indexOf('Name');
@@ -284,22 +325,22 @@ function agentOnboard(payload) {
     }
 
     if (foundRow > 0) {
-      data.sheet.getRange(foundRow, idxName + 1).setValue(info.name || '');
-      data.sheet.getRange(foundRow, idxEmail + 1).setValue(info.email || '');
-      data.sheet.getRange(foundRow, idxCourse + 1).setValue('COURSE_12M');
-      data.sheet.getRange(foundRow, idxModule + 1).setValue('M0');
-      data.sheet.getRange(foundRow, idxStatus + 1).setValue('Active');
+      if (idxName >= 0) data.sheet.getRange(foundRow, idxName + 1).setValue(info.name || '');
+      if (idxEmail >= 0) data.sheet.getRange(foundRow, idxEmail + 1).setValue(info.email || '');
+      if (idxCourse >= 0) data.sheet.getRange(foundRow, idxCourse + 1).setValue('COURSE_12M');
+      if (idxModule >= 0) data.sheet.getRange(foundRow, idxModule + 1).setValue('M0');
+      if (idxStatus >= 0) data.sheet.getRange(foundRow, idxStatus + 1).setValue('Active');
     } else {
       var row = [];
-      row[idxUser] = targetUser;
-      row[idxName] = info.name || '';
-      row[idxEmail] = info.email || '';
-      row[idxCourse] = 'COURSE_12M';
-      row[idxModule] = 'M0';
-      row[idxProgress] = 0;
-      row[idxStatus] = 'Active';
-      row[idxJoined] = new Date();
-      row[idxSubs] = '';
+      if (idxUser >= 0) row[idxUser] = targetUser;
+      if (idxName >= 0) row[idxName] = info.name || '';
+      if (idxEmail >= 0) row[idxEmail] = info.email || '';
+      if (idxCourse >= 0) row[idxCourse] = 'COURSE_12M';
+      if (idxModule >= 0) row[idxModule] = 'M0';
+      if (idxProgress >= 0) row[idxProgress] = 0;
+      if (idxStatus >= 0) row[idxStatus] = 'Active';
+      if (idxJoined >= 0) row[idxJoined] = new Date();
+      if (idxSubs >= 0) row[idxSubs] = '';
       var normalized = data.headers.map(function(_, idx) { return row[idx] == null ? '' : row[idx]; });
       data.sheet.appendRow(normalized);
     }
