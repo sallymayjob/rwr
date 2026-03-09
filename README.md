@@ -1,135 +1,83 @@
-# RWR Group Agentic LMS (Google Apps Script)
+# Slack LMS Sequential Lesson Delivery (Google Apps Script)
 
-A Slack-native learning management system for RWR Group, built on:
+This project delivers lessons from a CSV-imported Google Sheet to Slack sequentially using **Google Apps Script only**.
 
-- **Slack Pro** (slash commands + events)
-- **Google Apps Script Web App** (single webhook entrypoint)
-- **AI providers**:
-  - Anthropic Claude (`claude-sonnet-4-6`)
-  - Google Gemini (`gemini-2.0-flash`)
-- **Google Sheets** as the operational datastore
+## Architecture
 
-## Overview
+Google Sheets → Apps Script → Slack Bot API (`chat.postMessage`) → Slack DM/Channel.
 
-This codebase implements a supervisor-style routing architecture where all incoming Slack traffic goes through one entrypoint (`doPost` in `Code.gs`) and is deferred into a queue for processing.
+Slash command `/learn` routes into this delivery flow and posts the next sequential lesson to the requesting learner's DM.
 
-Core design goals:
+## Source Data
 
-- Fast Slack acknowledgement (`doPost` returns quickly)
-- Signed request validation (Slack HMAC verification)
-- Deterministic sheet operations using batch reads
-- Agent-style handlers for learner/admin workflows
-- Provider-routed AI calls (`callAI`) for Claude/Gemini split
+Import `lesson_slack_threads_filled_from_lessons.csv` into a sheet.
 
-## Repository Structure
+Required columns:
 
-- `Config.gs` — constants, sheet names, properties, provider routing, admin helpers
-- `Auth.gs` — Slack signature validation and constant-time compare
-- `Sheets.gs` — batched read/write helpers, progress/submission updates, rollups, queue writes
-- `Slack.gs` — Slack API wrappers and Block Kit builders
-- `Agents.gs` — agent handlers and AI integration (`callClaude`, `callGemini`, `callAI`)
-- `Code.gs` — `doPost`, queue worker (`processQueuedPipeline`), event/command routing
+- `LessonID`
+- `Slack Thread Text`
+- `Submit Code`
+- `Topic`
 
-## Supported Commands
+Optional source columns are supported and left unchanged.
 
-### Learner
+The script auto-adds tracking columns if missing:
 
-- `/learn`
-- `/submit`
-- `/progress`
-- `/courses`
-- `/help`
+- `Posted Status`
+- `Posted At`
+- `Slack TS`
+- `Slack Channel`
+- `Lesson Order`
+- `Error Log`
 
-### Admin (guarded by `ADMIN_USER_IDS`)
+## Script Properties
 
-- `/enroll` / `/enrol`
-- `/unenroll` / `/unenrol`
-- `/cert`
-- `/onboard`
-- `/offboard`
-- `/report`
-- `/gaps`
-- `/backup`
-- `/mix`
-- `/media`
-- `/startlesson`
-- `/stoplesson`
+Set these in **Project Settings → Script Properties**:
 
-## Slack Events
+- `SLACK_BOT_TOKEN` (required)
+- `DEFAULT_CHANNEL` (required unless row `Slack Channel` is populated)
+- `SHEET_NAME` (default: `lesson_slack_threads_filled_from_lessons`)
+- `DRY_RUN` (`true`/`false`, default `false`)
+- `BATCH_LIMIT` (default `25`)
+- `SHEETS_ID` (required, target spreadsheet id)
 
-- `app_mention`
-- DM messages (`message` with `channel_type=im`)
-- `reaction_added` for `white_check_mark` (`✅`)
+## Core Functions
 
-## Data Model (Sheets)
+Implemented in `LessonDelivery.gs`:
 
-Expected sheet tabs (case-sensitive):
+- `getConfig()`
+- `getLessonSheet()`
+- `ensureTrackingColumns()`
+- `getLessons()`
+- `getNextLesson()`
+- `postLessonToSlack(lesson)`
+- `markLessonPosted(rowIndex, slackResponse)`
+- `markLessonError(rowIndex, errorMessage)`
+- `postNextLesson()`
+- `postAllLessons()`
+- `postLessonById(lessonId)`
 
-- `Lessons`
-- `Modules`
-- `Courses`
-- `Learners`
-- `Lesson_Submissions`
-- `Lesson_QA_Records`
-- `Lesson_Metrics`
-- `Slack_Threads`
-- `Queue`
+## Menu
 
-## AI Provider Routing
+When the sheet opens, a custom **Slack LMS** menu is added:
 
-Agent routing is configured in `Config.gs` (`AGENT_PROVIDER`).
+- Post Next Lesson
+- Post All Lessons
+- Post Lesson by ID
+- Reset Post Status
+- Test Slack Connection
 
-- Pedagogical scoring/coaching routes to **Claude**
-- Reporting/operational/generic assistant routes to **Gemini**
-- Unknown agent defaults to **Claude**
+## Delivery Rules
 
-## Quick Start
+- Lessons are ordered by parsed `LessonID` (`M##-W##-L##`).
+- A lesson is posted only when:
+  - `Posted Status != TRUE`, and
+  - `Slack TS` is empty.
+- Message text is sent **exactly** from `Slack Thread Text`.
+- Errors are logged to `Error Log` and `Logger`.
 
-1. Read `DEPLOYMENT.md`.
-2. Create/populate the required Google Sheets tabs.
-3. Set Script Properties (tokens, keys, IDs).
-4. Deploy as a Web App.
-5. Connect Slack slash commands and event subscriptions to the Web App URL.
-6. Use `/startlesson` to enable lessons (manual mode, no scheduled trigger).
+## Notes
 
-## Security Notes
-
-- Keep all secrets in Script Properties only.
-- Never hardcode API keys/tokens in source.
-- Ensure Slack signature validation is enabled before routing.
-- Restrict admin operations through `ADMIN_USER_IDS`.
-
-## Operational Notes
-
-- `doPost` only validates/parses/enqueues and returns fast.
-- `processQueuedPipeline` processes queued jobs and sets status (`PENDING`/`RUNNING`/`DONE`/`ERROR`).
-- Failed queue items remain visible for troubleshooting.
-
-## Next Steps
-
-- Add execution log alerting (queue errors, provider failures, rate limiting).
-- Add periodic archival or cleanup strategy for historical queue/submission volume.
-- Add automated Apps Script tests or external harness for regression checks.
-
-
-## Media Agent
-
-Use `/media <lessonId>` (admin only) to run a media-needs review for a lesson. The agent defaults to no media and only recommends visuals when they materially improve clarity. It writes `Media Required` (`TRUE`/`FALSE`) and `Media Brief` (JSON brief text when required) directly to the `Lessons` sheet.
-
-
-## Workflow Builder Auto-Enrol
-
-You can auto-enrol users via Slack Workflow Builder by sending a webhook payload containing user info and `workflow_trigger=enroll` (or `action=enroll`). The backend queues a `workflow_enroll` job and upserts the learner into `Learners`. Optionally set `WORKFLOW_ENROLL_LINK` in Script Properties so not-enrolled users receive an *Enrol* button in DM.
-
-
-## AI Execution Mode
-
-This deployment runs in **non-AI mode**. Claude and Gemini calls are disabled, and command-based LMS behavior is used for execution.
-
-
-## Manual Lesson Trigger
-
-Use `/startlesson` and `/stoplesson` (admin only) to control whether learner lesson commands are active. No automated time-based trigger is used.
-
-
-Onboarding note: `/onboard @username` now auto-enrols into `COURSE_12M`, sets `Current Module` to `M0`, sends orientation DM, and delivers first available lesson automatically.
+- Uses Slack Web API endpoint `chat.postMessage`.
+- Stores `ts` and `channel` from Slack response.
+- Duplicate posting is blocked by status/timestamp checks.

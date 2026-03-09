@@ -152,9 +152,10 @@ function resolveSlackUserId(query) {
   var q = String(query || '').trim();
   if (!q) return '';
 
-  var mention = q.match(/^<@([A-Z0-9]+)>$/i);
+  // Slash command mentions can arrive as <@U12345> or <@U12345|name>
+  var mention = q.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]+)?>$/i);
   if (mention) return mention[1];
-  if (/^U[A-Z0-9]+$/i.test(q)) return q;
+  if (/^[UW][A-Z0-9]+$/i.test(q)) return q;
 
   q = q.replace(/^@/, '').toLowerCase();
   var token = PROPS.getProperty('SLACK_BOT_TOKEN');
@@ -177,7 +178,8 @@ function resolveSlackUserId(query) {
         var candidates = [
           String(m.name || '').toLowerCase(),
           String((m.profile && m.profile.display_name) || '').toLowerCase(),
-          String((m.profile && m.profile.real_name) || '').toLowerCase()
+          String((m.profile && m.profile.real_name) || '').toLowerCase(),
+          String((m.profile && m.profile.email) || '').toLowerCase()
         ];
         if (candidates.indexOf(q) !== -1) return m.id;
       }

@@ -114,14 +114,9 @@ function agentTutor(payload) {
     return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
-  const lessonId = getCurrentLessonId(learner);
-  if (!lessonId) return postDM(payload.user_id, 'You are up to date. No pending lesson in your current module.');
-
-  const thread = getSlackThread(lessonId);
-  if (!thread) return postDM(payload.user_id, 'No lesson found for ' + lessonId + '. Contact your administrator.');
-
-  const blocks = buildLessonBlocks(thread['Slack Thread Text'], lessonId, payload.user_id, learner._rowIndex);
-  return postDM(payload.user_id, 'Here is your next lesson.', blocks);
+  const result = postNextLessonForUser(payload.user_id);
+  if (result && (result.posted || result.ok)) return result;
+  return postDM(payload.user_id, 'You are up to date. No pending lesson.');
 }
 
 function agentQuizMaster(payload) {
@@ -257,8 +252,9 @@ function agentUnenroll(payload) {
 
 function agentOnboard(payload) {
   var rawTarget = String((payload.text || '').trim() || payload.user_id);
-  var targetUser = resolveSlackUserId(rawTarget) || rawTarget;
-  if (!/^U[A-Z0-9]+$/i.test(targetUser)) {
+  var firstToken = rawTarget.split(/\s+/)[0] || rawTarget;
+  var targetUser = resolveSlackUserId(firstToken) || resolveSlackUserId(rawTarget) || firstToken;
+  if (!/^[UW][A-Z0-9]+$/i.test(targetUser)) {
     return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
   }
 
@@ -378,8 +374,27 @@ function agentReport(payload) {
 
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
-  const learnerCmds = ['/learn', '/submit', '/progress', '/courses', '/help'];
-  const adminCmds = ['/enroll', '/enrol', '/unenroll', '/unenrol', '/onboard', '/offboard', '/report', '/gaps', '/backup', '/mix', '/media', '/cert', '/startlesson', '/stoplesson'];
+  const learnerCmds = [
+    '/learn — Get your next lesson.',
+    '/submit <lessonId> <evidence> — Submit proof of completion.',
+    '/progress — View your completion progress.',
+    '/courses — List available courses and your enrollment.',
+    '/help — Show command help.'
+  ];
+  const adminCmds = [
+    '/enrol <userId> — Enroll a learner (AU/NZ spelling).',
+    '/unenrol <userId> — Remove enrollment (AU/NZ spelling).',
+    '/onboard <userId> — Auto-enroll and send starter lesson.',
+    '/offboard <userId> — Archive a learner.',
+    '/report — Generate a cohort report.',
+    '/gaps — Show learners who are behind.',
+    '/backup — Create a backup of LMS sheets.',
+    '/mix [topic] — Generate a learning mix.',
+    '/media <lessonId> — Review media needs for a lesson.',
+    '/cert — Check certification eligibility.',
+    '/startlesson — Enable learner lesson commands.',
+    '/stoplesson — Pause learner lesson commands.'
+  ];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
   if (admin) text += '\n\n*Admin commands*\n' + adminCmds.join('\n');
   return postDM(payload.user_id, text);
