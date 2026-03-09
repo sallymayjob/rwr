@@ -69,6 +69,7 @@ Configure in Apps Script → Project Settings → Script Properties:
 - `BATCH_LIMIT` (default `25`)
 - `QUEUE_BATCH_LIMIT` (optional, default `15`)
 - `QUEUE_MAX_RUNTIME_MS` (optional, default `240000`)
+- `COMMAND_DEDUPE_TTL_MS` (optional, default `120000`)
 
 Backward compatibility:
 

@@ -112,6 +112,36 @@ function scheduleQueuedPipeline_() {
   }
 }
 
+
+function normalizeCommandText_(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function shouldSkipDuplicateCommand_(payload) {
+  try {
+    var cmd = String(payload && payload.command || '').trim();
+    var user = String(payload && payload.user_id || '').trim();
+    var text = normalizeCommandText_(payload && payload.text || '');
+    if (!cmd || !user) return false;
+
+    var key = 'CMD_DEDUPE_' + Utilities.base64EncodeWebSafe(cmd + '|' + user + '|' + text).replace(/=+$/,'');
+    var now = Date.now();
+    var ttlMs = Number(PROPS.getProperty('COMMAND_DEDUPE_TTL_MS') || 120000);
+    var last = Number(PROPS.getProperty(key) || 0);
+
+    if (last && (now - last) < ttlMs) {
+      Logger.log('Skipping duplicate command ' + cmd + ' for user ' + user + ' within dedupe window.');
+      return true;
+    }
+
+    PROPS.setProperty(key, String(now));
+    return false;
+  } catch (err) {
+    Logger.log('shouldSkipDuplicateCommand_ error: ' + err);
+    return false;
+  }
+}
+
 function processQueuedPipeline() {
   const start = Date.now();
   const lock = LockService.getScriptLock();
@@ -135,7 +165,7 @@ function processQueuedPipeline() {
     const candidates = [];
     for (let i = 0; i < rows.length; i++) {
       const status = String(rows[i][idxStatus] || '').trim();
-      if (status === 'PENDING' || status === 'RUNNING') {
+      if (status === 'PENDING') {
         candidates.push(i);
       }
       if (candidates.length >= batchLimit) break;
@@ -159,7 +189,11 @@ function processQueuedPipeline() {
         const job = JSON.parse(payloadJson || '{}');
 
         if (job.kind === 'command') {
-          routeCommand(job.payload);
+          if (shouldSkipDuplicateCommand_(job.payload)) {
+            // Intentionally skip duplicate command to prevent repeated onboarding/posts.
+          } else {
+            routeCommand(job.payload);
+          }
         } else if (job.kind === 'event') {
           routeEvent(job.payload);
         } else if (job.kind === 'workflow_enroll') {

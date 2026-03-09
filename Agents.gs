@@ -297,9 +297,7 @@ function agentOnboard(payload) {
   }
 
   var info = getUserInfo(targetUser) || { name: '', email: '', lookup_error: 'users_info_failed' };
-  var profileWarning = '';
   if (info.lookup_error) {
-    profileWarning = '\n⚠️ Slack profile lookup failed (' + info.lookup_error + '). Onboarding continued with user ID only.';
     Logger.log('agentOnboard warning: users.info failed for ' + targetUser + ' with error=' + info.lookup_error);
   }
 
