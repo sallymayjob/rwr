@@ -364,7 +364,7 @@ function agentOnboard(payload) {
     }
   }
 
-  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.\n\nNext command: /progress');
+  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.' + profileWarning + '\n\nNext command: /progress');
 }
 
 function agentOffboard(payload) {
