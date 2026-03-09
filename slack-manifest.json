@@ -3,7 +3,7 @@
     "name": "RWR Group Agentic LMS",
     "description": "Slack-native LMS for RWR Group recruitment teams",
     "background_color": "#1E3A8A",
-    "long_description": "RWR LMS delivers onboarding, lessons, submissions, progress tracking, reporting, and admin workflows directly inside Slack. Key commands: /learn (next lesson), /submit <lessonId> <evidence> (verification), /progress (completion), /courses (enrollment), and /help (command guide). Admin commands include /enroll, /unenroll, /onboard, /offboard, /report, /gaps, /backup, /mix, /media, /cert, /startlesson, and /stoplesson."
+    "long_description": "RWR LMS delivers onboarding, lessons, submissions, progress tracking, reporting, and admin workflows directly inside Slack. Key commands: /learn (next lesson), /submit <lessonId> <evidence> (verification), /progress (completion), /courses (enrollment), and /help (command guide). Admin commands include /enrol, /unenrol, /onboard, /offboard, /report, /gaps, /backup, /mix, /media, /cert, /startlesson, and /stoplesson."
   },
   "features": {
     "bot_user": {

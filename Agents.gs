@@ -386,9 +386,7 @@ function agentHelp(payload) {
     '/help — Show command help.'
   ];
   const adminCmds = [
-    '/enroll <userId> — Enroll a learner.',
     '/enrol <userId> — Enroll a learner (AU/NZ spelling).',
-    '/unenroll <userId> — Remove a learner enrollment.',
     '/unenrol <userId> — Remove enrollment (AU/NZ spelling).',
     '/onboard <userId> — Auto-enroll and send starter lesson.',
     '/offboard <userId> — Archive a learner.',

@@ -42,8 +42,8 @@ Core design goals:
 
 ### Admin (guarded by `ADMIN_USER_IDS`)
 
-- `/enroll <userId>` / `/enrol <userId>` — Enroll a learner.
-- `/unenroll <userId>` / `/unenrol <userId>` — Unenroll a learner.
+- `/enrol <userId>` — Enroll a learner.
+- `/unenrol <userId>` — Unenroll a learner.
 - `/cert` — Check certification eligibility.
 - `/onboard <userId>` — Auto-enroll and send orientation + first lesson.
 - `/offboard <userId>` — Archive a learner record.
