@@ -61,6 +61,62 @@ function getLessonRows() {
   return rows;
 }
 
+function getOrderedLessonsForCourseOrModule(courseId, moduleId) {
+  const lessonsData = getAllRows(SHEET_LESSONS);
+  const rows = lessonsData.rows.map(function(r) { return rowToObj(lessonsData.headers, r); }).filter(function(r) {
+    const status = String(r['Status'] || '').toLowerCase();
+    if (status === 'archived') return false;
+    if (moduleId) return String(r['ModuleID']) === String(moduleId);
+    return String(r['CourseID']) === String(courseId);
+  });
+
+  if (!moduleId && courseId) {
+    const mapRows = getCourseModuleMapRows(courseId);
+    const moduleOrder = {};
+    mapRows.forEach(function(m, idx) { moduleOrder[String(m['ModuleID'])] = idx; });
+    rows.sort(function(a, b) {
+      const am = moduleOrder[String(a['ModuleID'])];
+      const bm = moduleOrder[String(b['ModuleID'])];
+      const av = am == null ? 9999 : am;
+      const bv = bm == null ? 9999 : bm;
+      if (av !== bv) return av - bv;
+      return Number(a['Lesson Order'] || 99999) - Number(b['Lesson Order'] || 99999);
+    });
+    return rows;
+  }
+
+  rows.sort(function(a, b) { return Number(a['Lesson Order'] || 99999) - Number(b['Lesson Order'] || 99999); });
+  return rows;
+}
+
+function getSlackDeliveryRowForLesson(lessonId) {
+  const row = getLessonDeliveryRow(lessonId);
+  if (row) return row;
+
+  // Legacy compatibility only: fallback to Slack_Threads alias if configured differently.
+  if (SHEET_THREADS && SHEET_THREADS !== SHEET_SLACK_DELIVERY) {
+    const data = getAllRows(SHEET_THREADS);
+    const idx = data.headers.indexOf('LessonID');
+    for (let i = 0; i < data.rows.length; i++) {
+      if (String(data.rows[i][idx]) === String(lessonId)) {
+        const obj = rowToObj(data.headers, data.rows[i]);
+        obj._rowIndex = i + 2;
+        return obj;
+      }
+    }
+  }
+
+  return null;
+}
+
+function canDeliverLesson(lessonId) {
+  const ok = isLessonQaApproved(lessonId);
+  if (!ok) {
+    return { ok: false, blocked: true, reason: 'Lesson blocked by QA gate', lesson_id: lessonId };
+  }
+  return { ok: true, blocked: false, lesson_id: lessonId };
+}
+
 function buildLessonMessage(row) { return String(row['Slack Thread Text'] || ''); }
 
 function markLessonPosted(rowIndex, response) {
@@ -72,6 +128,25 @@ function markLessonPosted(rowIndex, response) {
   if (idxStatus >= 0) sheet.getRange(rowIndex, idxStatus + 1).setValue('Delivered');
   if (idxTs >= 0) sheet.getRange(rowIndex, idxTs + 1).setValue(response.ts || '');
   if (idxChannel >= 0) sheet.getRange(rowIndex, idxChannel + 1).setValue(response.channel || '');
+}
+
+function markLessonDelivered(learnerId, lessonId, channel, ts) {
+  const row = getSlackDeliveryRowForLesson(lessonId);
+  if (row && row._rowIndex) {
+    markLessonPosted(row._rowIndex, { channel: channel || '', ts: ts || '' });
+  }
+
+  const learner = getLearnerRecord(learnerId);
+  if (learner && learner._rowIndex) {
+    const data = getAllRows(SHEET_LEARNERS);
+    const idxLastLesson = data.headers.indexOf('Last LessonID');
+    if (idxLastLesson >= 0) data.sheet.getRange(learner._rowIndex, idxLastLesson + 1).setValue(lessonId);
+  }
+}
+
+function blockLessonDelivery(lessonId, reason) {
+  Logger.log('Lesson delivery blocked for ' + lessonId + ': ' + reason);
+  return { ok: false, posted: false, blocked: true, lesson_id: lessonId, reason: reason };
 }
 
 function markRowError(sheet, headers, rowIndex, errorMessage) {
@@ -100,16 +175,42 @@ function postSlackMessage(channel, text) {
 
 function openSlackModal(triggerId, view) { return callSlackApi('views.open', { trigger_id: triggerId, view: view }); }
 
-function postLessonInternal_(row, targetChannel) {
+function postLessonInternal_(row, targetChannel, learnerId) {
   const lessonId = String(row['LessonID'] || '').trim();
   if (!lessonId) throw new Error('Missing LessonID in Slack_Delivery row');
-  if (!isLessonQaApproved(lessonId)) throw new Error('QA gate failed for lesson ' + lessonId);
+
+  const qaResult = canDeliverLesson(lessonId);
+  if (!qaResult.ok) return blockLessonDelivery(lessonId, qaResult.reason || 'QA gate failed');
+
   const channel = String(targetChannel || row['Slack Channel'] || row['Mapped Channel Name'] || getConfig().DEFAULT_LESSON_CHANNEL).trim();
   if (!channel) throw new Error('No Slack channel for lesson ' + lessonId);
+
   const response = postSlackMessage(channel, buildLessonMessage(row));
-  markLessonPosted(row.__rowIndex, response);
+  markLessonDelivered(learnerId || '', lessonId, response.channel, response.ts);
   recordLessonMetricTouch(lessonId);
   return { ok: true, posted: true, lesson_id: lessonId, ts: response.ts, channel: response.channel };
+}
+
+function getNextLessonForLearner(learnerId) {
+  const learner = getLearnerRecord(learnerId);
+  if (!learner) return null;
+
+  // Canonical learner progression path.
+  const canonicalLessonId = getCurrentLessonId(learner);
+  if (canonicalLessonId) return String(canonicalLessonId);
+
+  // Compatibility fallback only: infer from submissions + ordered lessons.
+  const orderedLessons = getOrderedLessonsForCourseOrModule(learner['Enrolled Course'] || '', learner['Current Module'] || '');
+  if (!orderedLessons.length) return null;
+
+  const done = {};
+  getLearnerSubmissions(learnerId).forEach(function(s) { done[String(s['Lesson'] || '')] = true; });
+  for (let i = 0; i < orderedLessons.length; i++) {
+    const lessonId = String(orderedLessons[i]['LessonID'] || '');
+    if (lessonId && !done[lessonId]) return lessonId;
+  }
+
+  return null;
 }
 
 function getNextLessonRow() {
@@ -135,14 +236,14 @@ function postAllLessons(limit) {
   for (let i = 0; i < rows.length && posted < maxToPost; i++) {
     const status = String(rows[i]['Delivery Status'] || '').toLowerCase();
     if (status === 'delivered') continue;
-    postLessonInternal_(rows[i]);
-    posted++;
+    const result = postLessonInternal_(rows[i]);
+    if (result && result.posted) posted++;
   }
   return { ok: true, posted: posted };
 }
 
 function postLessonById(lessonId) {
-  const row = getLessonDeliveryRow(lessonId);
+  const row = getSlackDeliveryRowForLesson(lessonId);
   if (!row) throw new Error('Lesson not found in Slack_Delivery: ' + lessonId);
   return postLessonInternal_(row);
 }
@@ -150,14 +251,19 @@ function postLessonById(lessonId) {
 function postNextLessonForUser(userId) {
   const learner = getLearnerRecord(userId);
   if (!learner) throw new Error('Learner not found');
-  const lessonId = getCurrentLessonId(learner);
-  if (!lessonId) return postDM(userId, 'You are up to date. No pending lesson.');
-  const row = getLessonDeliveryRow(lessonId);
+
+  const lessonId = getNextLessonForLearner(userId);
+  if (!lessonId) return { ok: true, posted: false, message: 'No pending lesson.' };
+
+  const row = getSlackDeliveryRowForLesson(lessonId);
   if (!row) throw new Error('Slack_Delivery row missing for ' + lessonId);
-  if (!isLessonQaApproved(lessonId)) return postDM(userId, 'Next lesson is pending QA approval.');
+
+  const qaResult = canDeliverLesson(lessonId);
+  if (!qaResult.ok) return blockLessonDelivery(lessonId, qaResult.reason || 'QA gate failed');
+
   const dm = openDM(userId);
   const response = postSlackMessage(dm, buildLessonMessage(row));
-  markLessonPosted(row._rowIndex || row.__rowIndex || 2, response);
+  markLessonDelivered(userId, lessonId, response.channel, response.ts);
   return { ok: true, posted: true, lesson_id: lessonId, ts: response.ts, channel: response.channel };
 }
 

@@ -1,29 +1,40 @@
 function validateSlackRequest(e) {
   try {
-    if (!e || !e.postData || !e.postData.contents) return false;
+    if (!e || !e.postData || typeof e.postData.contents !== 'string') return false;
     const rawBody = e.postData.contents;
     const signingSecret = PROPS.getProperty('SLACK_SIGNING_SECRET') || '';
-
-    let body = {};
-    try { body = JSON.parse(rawBody || '{}'); } catch (ignore) { body = {}; }
-    if (body.type === 'url_verification') return true;
 
     const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
     const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
 
     if (timestamp && slackSignature && signingSecret) {
       const tsNum = Number(timestamp);
-      if (!tsNum || Math.abs(Math.floor(Date.now() / 1000) - tsNum) > 300) return false;
+      const now = Math.floor(Date.now() / 1000);
+      if (!tsNum || Math.abs(now - tsNum) > 300) {
+        Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
+        return false;
+      }
+
       const baseString = 'v0:' + timestamp + ':' + rawBody;
       const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
       const hex = bytes.map(function(b) {
         const v = (b < 0 ? b + 256 : b).toString(16);
         return v.length === 1 ? '0' + v : v;
       }).join('');
-      return constantTimeEqual('v0=' + hex, slackSignature);
+      const expected = 'v0=' + hex;
+      const valid = constantTimeEqual(expected, String(slackSignature || '').trim());
+      if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
+      return valid;
+    }
+
+    if (!isSlackDevAuthBypassEnabled_()) {
+      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret.');
+      return false;
     }
 
     const configuredToken = PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '';
+    let body = {};
+    try { body = JSON.parse(rawBody || '{}'); } catch (ignore) { body = {}; }
     const requestToken =
       (body && body.token) ||
       (e.parameter && e.parameter.token) ||
@@ -31,15 +42,23 @@ function validateSlackRequest(e) {
       '';
 
     if (configuredToken && requestToken) {
-      return constantTimeEqual(String(configuredToken), String(requestToken));
+      const ok = constantTimeEqual(String(configuredToken), String(requestToken));
+      if (ok) {
+        Logger.log('WARNING: validateSlackRequest accepted request using development token fallback.');
+      }
+      return ok;
     }
 
-    Logger.log('validateSlackRequest failed: missing/invalid signature and no valid verification token fallback.');
+    Logger.log('validateSlackRequest rejected: development fallback enabled but token invalid.');
     return false;
   } catch (err) {
     Logger.log('validateSlackRequest error: ' + err);
     return false;
   }
+}
+
+function isSlackDevAuthBypassEnabled_() {
+  return String(PROPS.getProperty('SLACK_AUTH_DEV_MODE') || 'false').toLowerCase() === 'true';
 }
 
 function getHeaderValue(e, keys) {

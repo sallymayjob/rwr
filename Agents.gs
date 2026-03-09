@@ -115,7 +115,8 @@ function agentTutor(payload) {
   }
 
   const result = postNextLessonForUser(payload.user_id);
-  if (result && (result.posted || result.ok)) return result;
+  if (result && result.posted) return result;
+  if (result && result.blocked) return postDM(payload.user_id, 'Next lesson is not available yet: ' + (result.reason || 'QA gate blocked delivery.'));
   return postDM(payload.user_id, 'You are up to date. No pending lesson.');
 }
 
@@ -133,8 +134,10 @@ function agentQuizMaster(payload) {
   const mission = getMissionBySubmitCode(submitCode);
   if (!mission) return postDM(payload.user_id, 'Submit Code not found in Missions: ' + submitCode);
 
-  const lessonId = String(mission['LessonID'] || '');
-  const missionId = String(mission['MissionID'] || '');
+  const lessonId = String(mission['LessonID'] || '').trim();
+  const missionId = String(mission['MissionID'] || '').trim();
+  if (!lessonId || !missionId) return postDM(payload.user_id, 'Mission mapping is incomplete for Submit Code: ' + submitCode);
+
   const prompt = getSystemPrompt('quiz_master').replace('{lessonId}', lessonId);
   const aiText = callAI('quiz_master', prompt, 'Mission: ' + missionId + '\nEvidence:\n' + evidence, 300);
 
@@ -152,8 +155,11 @@ function agentQuizMaster(payload) {
 
   writeSubmission(lessonId, payload.user_id, score, 'slash_command', missionId, submitCode, evidence);
   updateLearnerProgress(payload.user_id, lessonId, missionId);
+
+  const next = getNextLessonForLearner(payload.user_id);
+  const nextLine = next ? ('\n*Next Lesson:* ' + next + ' (use /learn)') : '\n*Next Lesson:* You are up to date.';
   const resultText = '*Mission:* ' + missionId + '\n*Lesson:* ' + lessonId + '\n*Score:* ' + score + '\n*Status:* ' + (passed ? 'Passed [done]' : 'Needs improvement');
-  return postDM(payload.user_id, resultText + '\n\n' + feedback);
+  return postDM(payload.user_id, resultText + nextLine + '\n\n' + feedback);
 }
 
 function agentProgress(payload) {
@@ -172,7 +178,7 @@ function agentProgress(payload) {
 
   const submissions = getLearnerSubmissions(payload.user_id);
   const moduleRow = getModuleRow(learner['Current Module']);
-  const nextLessonId = getCurrentLessonId(learner) || '';
+  const nextLessonId = getNextLessonForLearner(payload.user_id) || '';
   const progressPayload = {
     name: learner['Name'] || learner['UserID'],
     current_module: learner['Current Module'] || '',
@@ -392,7 +398,7 @@ function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
   const learnerCmds = [
     '/learn — Get your next lesson.',
-    '/submit <lessonId> <evidence> — Submit proof of completion.',
+    '/submit <submit_code> <evidence> — Submit proof of completion.',
     '/progress — View your completion progress.',
     '/courses — List available courses and your enrollment.',
     '/help — Show command help.'
