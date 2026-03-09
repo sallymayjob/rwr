@@ -122,47 +122,37 @@ function agentTutor(payload) {
 function agentQuizMaster(payload) {
   if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) {
-    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
-    if (workflowLink) {
-      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
-        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
-        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
-      ]);
-    }
-    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
-  }
+  if (!learner) return sendAutomatedMessageOnce(payload.user_id, 'not_enrolled', "You're not enrolled yet.", null, '/help');
 
-  const txt = (payload.text || '').trim();
+  const txt = String(payload.text || '').trim();
   const parts = txt.split(/\s+/);
-  if (parts.length < 2) {
-    return postDM(payload.user_id, 'Usage: /submit {lessonId} {your verification evidence}');
-  }
+  if (parts.length < 2) return postDM(payload.user_id, 'Usage: /submit <submit_code> <evidence>');
 
-  const lessonId = parts.shift();
+  const submitCode = parts.shift();
   const evidence = parts.join(' ');
+  const mission = getMissionBySubmitCode(submitCode);
+  if (!mission) return postDM(payload.user_id, 'Submit Code not found in Missions: ' + submitCode);
+
+  const lessonId = String(mission['LessonID'] || '');
+  const missionId = String(mission['MissionID'] || '');
   const prompt = getSystemPrompt('quiz_master').replace('{lessonId}', lessonId);
+  const aiText = callAI('quiz_master', prompt, 'Mission: ' + missionId + '\nEvidence:\n' + evidence, 300);
 
-  const aiText = callAI('quiz_master', prompt, 'Submission evidence:\n' + evidence, 300);
-  let score = 0;
+  let score = evidence.length > 40 ? 70 : 45;
   let feedback = aiText;
-  let passed = false;
-
+  let passed = score >= 60;
   try {
     const parsed = JSON.parse(aiText);
-    score = Number(parsed.score || 0);
+    score = Number(parsed.score || score);
     feedback = parsed.feedback || aiText;
-    passed = !!parsed.passed;
+    passed = parsed.passed == null ? (score >= 60) : !!parsed.passed;
   } catch (err) {
     Logger.log('Quiz parse fallback: ' + err);
-    score = evidence.length > 40 ? 70 : 45;
-    passed = score >= 60;
   }
 
-  writeSubmission(lessonId, payload.user_id, score, 'slash_command');
-  updateLearnerProgress(payload.user_id, lessonId);
-
-  const resultText = '*Lesson:* ' + lessonId + '\n*Score:* ' + score + '\n*Status:* ' + (passed ? 'Passed [done]' : 'Needs improvement');
+  writeSubmission(lessonId, payload.user_id, score, 'slash_command', missionId, submitCode, evidence);
+  updateLearnerProgress(payload.user_id, lessonId, missionId);
+  const resultText = '*Mission:* ' + missionId + '\n*Lesson:* ' + lessonId + '\n*Score:* ' + score + '\n*Status:* ' + (passed ? 'Passed [done]' : 'Needs improvement');
   return postDM(payload.user_id, resultText + '\n\n' + feedback);
 }
 
@@ -348,23 +338,8 @@ function agentOnboard(payload) {
   } finally {
     lock.releaseLock();
   }
-
-  var learner = getLearnerRecord(targetUser);
-  var firstLesson = getFirstLessonIdForModule('M0') || getFirstReadyLessonIdForCourse('COURSE_12M');
-  var orientationText = '*Welcome to RWR LMS Orientation (M0)*\nYou are now onboarded and enrolled in COURSE_12M.';
-  postDM(targetUser, orientationText);
-
-  if (firstLesson) {
-    var thread = getSlackThread(firstLesson);
-    if (thread) {
-      var blocks = buildLessonBlocks(thread['Slack Thread Text'], firstLesson, targetUser, learner ? learner._rowIndex : 0);
-      postDM(targetUser, 'Your first lesson is ready.', blocks);
-    } else {
-      postDM(targetUser, 'You are onboarded. First lesson ID: ' + firstLesson + '.');
-    }
-  }
-
-  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.' + profileWarning + '\n\nNext command: /progress');
+  var profileWarning = info.lookup_error ? '\n(Warning: profile lookup failed: ' + info.lookup_error + ')' : '';
+  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '>.' + profileWarning + '\n\nNext command: /learn');
 }
 
 function agentOffboard(payload) {
@@ -752,13 +727,18 @@ function handleDirectMessage(event) {
 function handleReaction(event) {
   try {
     if (event.reaction !== 'white_check_mark') return;
-    let lessonId = '';
-    const m = (event.item && event.item.ts ? String(event.item.ts) : '').match(/M\d{2}-W\d{2}-(L\d{2}(?:\.\d+)?|DEEP)/);
-    if (m) lessonId = m[0];
-    if (!lessonId) return;
+    const channel = event.item && event.item.channel ? String(event.item.channel) : '';
+    const ts = event.item && event.item.ts ? String(event.item.ts) : '';
+    const delivery = findLessonDeliveryBySlackMessage(channel, ts);
+    if (!delivery) return;
 
-    writeSubmission(lessonId, event.user, null, 'reaction');
-    updateLearnerProgress(event.user, lessonId);
+    const lessonId = String(delivery['LessonID'] || '');
+    const submitCode = String(delivery['Submit Code'] || '');
+    const mission = getMissionBySubmitCode(submitCode);
+    const missionId = mission ? String(mission['MissionID'] || '') : '';
+
+    writeSubmission(lessonId, event.user, '', 'reaction', missionId, submitCode, 'reaction:white_check_mark');
+    updateLearnerProgress(event.user, lessonId, missionId);
     return postDM(event.user, 'Recorded completion for ' + lessonId + ' [done]');
   } catch (err) {
     Logger.log('handleReaction error: ' + err);
