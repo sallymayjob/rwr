@@ -27,29 +27,23 @@ function validateSlackRequest(e) {
       return valid;
     }
 
-    if (!isSlackDevAuthBypassEnabled_()) {
-      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret.');
+    if (!isSlackTokenFallbackEnabled_()) {
+      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret, and token fallback is disabled.');
       return false;
     }
 
-    const configuredToken = PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '';
-    let body = {};
-    try { body = JSON.parse(rawBody || '{}'); } catch (ignore) { body = {}; }
-    const requestToken =
-      (body && body.token) ||
-      (e.parameter && e.parameter.token) ||
-      (e.parameters && e.parameters.token && e.parameters.token[0]) ||
-      '';
+    const configuredToken = String(PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '').trim();
+    const requestToken = extractSlackVerificationToken_(rawBody, e);
 
     if (configuredToken && requestToken) {
       const ok = constantTimeEqual(String(configuredToken), String(requestToken));
       if (ok) {
-        Logger.log('WARNING: validateSlackRequest accepted request using development token fallback.');
+        Logger.log('WARNING: validateSlackRequest accepted request using verification token fallback.');
       }
       return ok;
     }
 
-    Logger.log('validateSlackRequest rejected: development fallback enabled but token invalid.');
+    Logger.log('validateSlackRequest rejected: token fallback enabled but token missing or invalid.');
     return false;
   } catch (err) {
     Logger.log('validateSlackRequest error: ' + err);
@@ -57,8 +51,46 @@ function validateSlackRequest(e) {
   }
 }
 
-function isSlackDevAuthBypassEnabled_() {
-  return String(PROPS.getProperty('SLACK_AUTH_DEV_MODE') || 'false').toLowerCase() === 'true';
+function isSlackTokenFallbackEnabled_() {
+  return String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || 'true').toLowerCase() === 'true';
+}
+
+function extractSlackVerificationToken_(rawBody, e) {
+  let body = {};
+  try { body = JSON.parse(rawBody || '{}'); } catch (ignore) { body = {}; }
+
+  let token =
+    (body && body.token) ||
+    (e.parameter && e.parameter.token) ||
+    (e.parameters && e.parameters.token && e.parameters.token[0]) ||
+    '';
+
+  if (token) return String(token).trim();
+
+  const payloadParam =
+    (e.parameter && e.parameter.payload) ||
+    (e.parameters && e.parameters.payload && e.parameters.payload[0]) ||
+    '';
+
+  if (!payloadParam && rawBody.indexOf('payload=') !== -1) {
+    const parts = rawBody.split('&');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf('payload=') === 0) {
+        try {
+          const decoded = decodeURIComponent(parts[i].slice(8).replace(/\+/g, ' '));
+          const payload = JSON.parse(decoded);
+          token = payload && payload.token;
+        } catch (ignore) {}
+      }
+    }
+  } else if (payloadParam) {
+    try {
+      const payload = JSON.parse(payloadParam);
+      token = payload && payload.token;
+    } catch (ignore) {}
+  }
+
+  return String(token || '').trim();
 }
 
 function getHeaderValue(e, keys) {

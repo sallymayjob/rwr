@@ -19,6 +19,8 @@ Required:
 Recommended:
 
 - `ADMIN_USER_IDS`
+- `SLACK_VERIFICATION_TOKEN` (for environments where Slack signature headers are stripped)
+- `SLACK_AUTH_TOKEN_FALLBACK` (`true` by default; set `false` to require signed requests)
 - `DEFAULT_LESSON_CHANNEL`
 - `DEFAULT_ONBOARDING_CHANNEL`
 - `ONBOARDING_SHEET_NAME`
