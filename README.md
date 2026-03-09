@@ -1,120 +1,135 @@
-# Slack Training + Onboarding Automation (Google Apps Script)
+# Slack Onboarding + Lesson Automation (Google Apps Script)
 
-This project runs entirely in:
+This project runs fully in Google Apps Script and uses Google Sheets as the source of truth.
 
-Google Sheets → Google Apps Script → Slack Bot API
+Architecture:
 
-It supports **two workflows in one Apps Script project**:
+Google Sheets → Apps Script → Slack Bot API (`chat.postMessage`, `views.open`) → Slack Interactivity (`doPost`) → Google Sheets tracking updates.
 
-1. **Lesson delivery workflow** from `lesson_slack_threads_filled_from_lessons`
-2. **Onboarding workflow** from `onboarding_workflow_filled_slack_messages`
+## Onboarding source of truth
 
-## Required Sheets
+Use the sheet imported from:
 
-Set sheet names through Script Properties (defaults shown):
+- `onboarding_workflow_filled_slack_messages.csv`
 
-- `LESSONS_SHEET_NAME` (default: `lesson_slack_threads_filled_from_lessons`)
-- `ONBOARDING_SHEET_NAME` (default: `onboarding_workflow_filled_slack_messages`)
+The onboarding flow strictly follows sheet row order.
 
-## Required Source Columns
+## Required onboarding columns
 
-### Lessons sheet
-
-- `LessonID`
-- `Slack Thread Text`
-
-(Other lesson columns like `Submit Code` and `Topic` are preserved and can still exist.)
-
-### Onboarding sheet
+Minimum required:
 
 - `Slack Message`
 
-Optional routing fields supported when present:
+Common supported fields (if present):
 
-- `Slack Channel`, `Channel`, `Channel ID`, `Responsible Channel`, `Team Channel`
-- `Responsible`, `Responsibility`, `Owner`, `Assignee`, `Responsible Team`
+- `Task / Checklist Step`
+- `Task`
+- `Checklist Step`
+- `Responsible`
+- `Responsibility`
+- `Owner`
+- `Assignee`
+- `Responsible Team`
+- `Slack Channel` / `Channel` / `Channel ID` / `Responsible Channel` / `Team Channel`
 
-## Auto-created Tracking Columns
+## Auto-created onboarding tracking columns
 
-The script auto-adds missing tracking columns.
+The script ensures these columns exist and writes status updates to them:
 
-### Lessons tracking
-
+- `Step ID`
 - `Posted Status`
 - `Posted At`
 - `Slack TS`
 - `Slack Channel`
-- `Error Log`
-
-### Onboarding tracking
-
-- `Posted Status`
-- `Posted At`
-- `Slack TS`
-- `Slack Channel`
+- `Modal Status`
+- `Modal Opened At`
+- `Submitted At`
 - `Completed Status`
+- `Completed By`
+- `Notes / Response`
 - `Error Log`
+
+`Step ID` is generated automatically when missing.
 
 ## Script Properties
 
-Configure in Apps Script → Project Settings → Script Properties:
+Set in Apps Script → Project Settings → Script Properties:
 
-- `SHEETS_ID` (Spreadsheet ID)
-- `SLACK_BOT_TOKEN` (Bot token)
-- `LESSONS_SHEET_NAME`
-- `ONBOARDING_SHEET_NAME`
-- `DEFAULT_LESSON_CHANNEL`
+- `SHEETS_ID`
+- `SLACK_BOT_TOKEN`
+- `SLACK_SIGNING_SECRET` (recommended)
+- `SLACK_VERIFICATION_TOKEN` (optional fallback)
+- `ONBOARDING_SHEET_NAME` (default `onboarding_workflow_filled_slack_messages`)
 - `DEFAULT_ONBOARDING_CHANNEL`
-- `DRY_RUN` (`true` or `false`)
+- `DRY_RUN` (`true`/`false`)
 - `BATCH_LIMIT` (default `25`)
-- `QUEUE_BATCH_LIMIT` (optional, default `15`)
-- `QUEUE_MAX_RUNTIME_MS` (optional, default `240000`)
-- `COMMAND_DEDUPE_TTL_MS` (optional, default `120000`)
+- `WEBAPP_URL` (optional placeholder for future links)
 
-Backward compatibility:
+Existing lesson properties continue to work.
 
-- `SHEET_NAME` is still read as a fallback for lessons.
-- `DEFAULT_CHANNEL` is still read as a fallback for lesson channel.
+## Slack setup
 
-## Slack Setup
+1. Create/install Slack app.
+2. Bot scopes:
+   - `chat:write`
+   - `commands` (if using slash commands)
+   - `users:read` (optional)
+3. Enable Interactivity and set Request URL to your Apps Script Web App URL.
+4. Event subscriptions / slash commands can share the same web app endpoint.
 
-- Install Slack app to workspace.
-- Add `chat:write` scope.
-- Optional (recommended): `users:read` if you want profile name/email enrichment during onboarding.
-- Use bot token in `SLACK_BOT_TOKEN`.
-- If using incoming events/slash commands in other files, keep existing Slack Events setup.
-- Slash commands are queued immediately and processed asynchronously by `processQueuedPipeline` via a time-based trigger (auto-created if missing).
-- Queue worker is time-boxed and batched to prevent Apps Script execution timeouts; it resumes remaining jobs on the next trigger run.
+## Deploy Apps Script Web App
 
-## How to Run
+1. Deploy → New deployment → type **Web app**.
+2. Execute as: **Me**.
+3. Who has access: **Anyone** (or org policy compatible with Slack callbacks).
+4. Copy deployment URL and use it in Slack Interactivity Request URL.
 
-Use the custom menu: **Slack Automation**
+## Onboarding runtime behavior
 
-### Lesson flow
+### 1) Post onboarding step
 
-- Post Next Lesson
-- Post All Lessons
-- Post Lesson By ID
+- `postNextOnboardingStep()` posts the next unposted and not-complete row in order.
+- Message body uses the row `Slack Message` value directly.
+- Message includes a Block Kit button (`Open Workflow`) and step metadata.
 
-Behavior:
+### 2) Open modal
 
-- Sorted by parsed `LessonID` (`M##-W##-L##`)
-- Posts `Slack Thread Text` exactly as prepared
-- Prevents duplicates if `Posted Status` is set or `Slack TS` exists
+- Button click sends Slack `block_actions` payload to `doPost(e)`.
+- `handleSlackInteraction(payload)` routes onboarding actions.
+- `openOnboardingModal(triggerId, row)` calls `views.open`.
+- Modal metadata stores `Step ID`, row index, channel, and message ts.
 
-### Onboarding flow
+### 3) Submit modal
+
+- Slack `view_submission` is parsed in `doPost(e)`.
+- `handleOnboardingModalSubmit(payload)` updates the correct row by metadata row index.
+- Writes modal and completion fields (`Modal Status`, `Submitted At`, `Completed Status`, `Completed By`, `Notes / Response`).
+
+### 4) Continue sequence
+
+- Next step is still determined by sheet row order.
+- Completed rows are skipped.
+- Posted rows are not reposted unless reset.
+
+## Custom menu
+
+`Slack Automation` menu includes:
 
 - Post Next Onboarding Step
 - Post All Onboarding Steps
 - Post Onboarding Step By ID/Row
-
-Behavior:
-
-- Sequential by sheet row order
-- Posts `Slack Message` exactly as prepared (with optional owner prefix)
-- Prevents duplicates if `Posted Status` is set or `Slack TS` exists
-
-### Utilities
-
+- Generate Missing Step IDs
+- Reopen Step Modal
+- Reset Posted Status
 - Ensure Tracking Columns
 - Test Slack Connection
+
+## Testing checklist
+
+1. Import CSV into onboarding sheet.
+2. Run **Ensure Tracking Columns**.
+3. Run **Generate Missing Step IDs**.
+4. Run **Post Next Onboarding Step**.
+5. Click **Open Workflow** in Slack.
+6. Submit modal with status and notes.
+7. Verify tracking columns updated in the same row.
