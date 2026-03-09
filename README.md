@@ -34,26 +34,26 @@ Core design goals:
 
 ### Learner
 
-- `/learn`
-- `/submit`
-- `/progress`
-- `/courses`
-- `/help`
+- `/learn` — Deliver your next lesson.
+- `/submit <lessonId> <evidence>` — Submit lesson verification.
+- `/progress` — Show your current completion progress.
+- `/courses` — List available courses and enrollment status.
+- `/help` — Show command help and usage.
 
 ### Admin (guarded by `ADMIN_USER_IDS`)
 
-- `/enroll` / `/enrol`
-- `/unenroll` / `/unenrol`
-- `/cert`
-- `/onboard`
-- `/offboard`
-- `/report`
-- `/gaps`
-- `/backup`
-- `/mix`
-- `/media`
-- `/startlesson`
-- `/stoplesson`
+- `/enroll <userId>` / `/enrol <userId>` — Enroll a learner.
+- `/unenroll <userId>` / `/unenrol <userId>` — Unenroll a learner.
+- `/cert` — Check certification eligibility.
+- `/onboard <userId>` — Auto-enroll and send orientation + first lesson.
+- `/offboard <userId>` — Archive a learner record.
+- `/report` — Generate a cohort report.
+- `/gaps` — Identify learners behind target pace.
+- `/backup` — Back up LMS sheets.
+- `/mix [topic]` — Generate a suggested learning mix.
+- `/media <lessonId>` — Assess media needs and create a brief.
+- `/startlesson` — Enable learner lesson commands.
+- `/stoplesson` — Pause learner lesson commands.
 
 ## Slack Events
 
