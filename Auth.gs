@@ -4,8 +4,10 @@ function validateSlackRequest(e) {
     const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
     const signingSecret = String(PROPS.getProperty('SLACK_SIGNING_SECRET') || '').trim();
 
-    const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
-    const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
+    // 1. Fetch headers natively (Google Apps Script lowercases headers automatically, but checking both is safe)
+    const headers = e.headers || {};
+    const timestamp = headers['X-Slack-Request-Timestamp'] || headers['x-slack-request-timestamp'];
+    const slackSignature = headers['X-Slack-Signature'] || headers['x-slack-signature'];
 
     // Primary path: Slack signing-secret HMAC validation.
     if (timestamp && slackSignature && signingSecret) {
@@ -43,7 +45,6 @@ function validateSlackRequest(e) {
     return false;
   }
 }
-
 function isSlackTokenFallbackEnabled_() {
   var raw = String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || '').toLowerCase().trim();
   return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
