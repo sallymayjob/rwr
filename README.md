@@ -4,6 +4,8 @@ This implementation keeps Google Sheets as the LMS datastore and Apps Script as 
 
 ## Canonical LMS sheets
 
+Canonical sheet contracts are centralized in `getSchemaDefinitionMap()` (`Sheets.gs`). `/health` and `/schema` run `validateSchema()` against this map and report missing or mismatched headers before writes proceed.
+
 ## Overview
 
 This codebase implements a supervisor-style routing architecture where all incoming Slack traffic goes through one entrypoint (`doPost` in `Code.gs`) and is deferred into a queue for processing.
@@ -50,6 +52,7 @@ Core design goals:
 - `/startlesson` — Enable learner lesson commands.
 - `/stoplesson` — Pause learner lesson commands.
 - `/deadletter [report|inspect <job_id>|requeue <job_id>]` — Review or requeue dead-letter queue jobs.
+- `/schema` — Run explicit schema validation for tabs/headers.
 
 ## Slack Events
 
@@ -68,19 +71,22 @@ Core design goals:
 
 ## Data Model (Sheets)
 
-Operational sheets:
+Canonical tab/column contracts (required headers):
 
-- `Learners`
-- `Lesson_Submissions`
-- `Queue`
-- `onboarding_workflow_filled_slack_messages` (onboarding only)
+- `Courses`: `CourseID`, `Course Title`, `Course Description`, `Entry Module`, `Module IDs`, `Module Names`, `Total Modules`, `Total Lessons`, `Audience`, `Difficulty Range`, `Delivery Mode`, `Status`
+- `Modules`: `ModuleID`, `Module Number`, `Module Name`, `Module Description`, `CourseID`, `Difficulty Tier`, `Audience`, `Total Lessons`, `Week Range`, `Focus Areas`, `Delivery Mode`, `Estimated Duration`
+- `Course_Module_Map`: `CourseID`, `ModuleID`, `Sequence`, `Is Entry Module`, `Total Lessons in Module`
+- `Lessons`: `LessonID`, `CourseID`, `ModuleID`, `Month`, `Week`, `Lesson Title`, `Type`, `Hook`, `Core Content`, `Insight`, `Takeaway`, `Objective`, `Intent`, `Mission`, `Verification`, `Submit Code`, `Difficulty`, `Focus Area`, `Tone`, `Status`, `Lesson Order`
+- `Missions`: `MissionID`, `LessonID`, `Activity`, `Instructions`, `Submit Code`, `Activity Type`, `Response Format`
+- `Lesson_Metrics`: `Lesson`, `Word Count Total`, `Word Count Core`, `Word Count Insight`, `Word Count Takeaway`, `Brand Compliance Score`, `PED Flags`, `Last Reviewed`, `Reviewer`
+- `Lesson_QA_Details`: `Lesson`, `QA Score`, `QA Verdict`, `QA Detail`, `QA Run Date`, `Revision Count`, `SOP-5 Validated`, `Spot Check`, `Priority`, `Status`, `Golden Example`
+- `Slack_Delivery`: `LessonID`, `Slack Thread Text`, `Submit Code`, `Mapped Focus`, `Mapped Action`, `Mapped Channel Name`, `Template Source Message`, `Delivery Status`, `Slack TS`, `Slack Channel`, `Send Order`
+- `Learners`: `UserID`, `Name`, `Email`, `Enrolled Course`, `Current Module`, `Progress (%)`, `Status`, `Joined Date`, `Completed Missions`, `Completed Lessons`, `Last LessonID`, `Last MissionID`
+- `Lesson_Submissions`: `Timestamp`, `Learner`, `Lesson`, `MissionID`, `Submit Code`, `Evidence`, `Method`, `Score`
+- `Queue`: `job_id`, `source_event_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `payload_ref`, `last_error_class`, `last_provider_response_code`, `dead_letter_error_json`, `last_attempt_at`
+- Governance tabs: `Audit_Log`, `Error_Log`, `Admin_Actions`, `Content_Pipeline`, `Prompt_Configs`, `Gem_Roles`, `Publish_Queue`, `Generated_Drafts` (see `Sheets.gs` schema map for exact required columns).
 
-Governance/operations sheets (created and validated by setup):
-
-- `Users`, `Cohorts`, `Tracks`, `Enrollments`, `Lesson_Content`
-- `Reminders`, `Approvals`, `Settings`, `Workflow_Rules`
-- `Audit_Log`, `Error_Log`, `Admin_Actions`
-- `Content_Pipeline`, `Prompt_Configs`, `Gem_Roles`, `Publish_Queue`, `Generated_Drafts`
+When headers are missing/mismatched (for example `Module` instead of `ModuleID`), write operations are blocked with an actionable admin error until fixed.
 
 ## Key behavior
 
@@ -96,7 +102,7 @@ Governance/operations sheets (created and validated by setup):
 - `/learn` — send next eligible lesson
 - `/submit <submit_code> <evidence>` — mission submission
 - `/progress` — learner progress summary
-- admin: `/onboard`, `/offboard`, `/enroll`, `/unenroll`, `/report`, `/gaps`, `/backup`, `/health`, `/deadletter`, `/startlesson`, `/stoplesson`
+- admin: `/onboard`, `/offboard`, `/enroll`, `/unenroll`, `/report`, `/gaps`, `/backup`, `/health`, `/schema`, `/deadletter`, `/startlesson`, `/stoplesson`
 
 ## Setup
 

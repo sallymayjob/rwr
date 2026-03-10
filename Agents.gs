@@ -253,6 +253,7 @@ function agentTutor(payload) {
 }
 
 function agentQuizMaster(payload) {
+  assertSchemaValidForWrite_('mission submission');
   if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
   if (!learner) return sendAutomatedMessageOnce(payload.user_id, 'not_enrolled', "You're not enrolled yet.", null, '/help');
@@ -325,6 +326,7 @@ function agentProgress(payload) {
 }
 
 function agentEnroll(payload) {
+  assertSchemaValidForWrite_('enrollment update');
   const userId = ((payload.text || '').trim() || payload.user_id);
   const courseId = 'COURSE_12M';
   const lock = LockService.getScriptLock();
@@ -354,6 +356,7 @@ function agentEnroll(payload) {
 }
 
 function agentUnenroll(payload) {
+  assertSchemaValidForWrite_('unenrollment update');
   const userId = ((payload.text || '').trim() || payload.user_id);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -418,10 +421,11 @@ function resolveOnboardTargetUser_(rawTarget, fallbackUserId) {
 }
 
 function agentOnboard(payload) {
+  assertSchemaValidForWrite_('onboarding update');
   var rawTarget = String((payload.text || '').trim());
   var targetUser = resolveOnboardTargetUser_(rawTarget, payload.user_id);
   if (!/^[UW][A-Z0-9]+$/i.test(targetUser)) {
-    return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
+    return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard U12345678.');
   }
 
   var info = getUserInfo(targetUser) || { name: '', email: '', lookup_error: 'users_info_failed' };
@@ -481,6 +485,7 @@ function agentOnboard(payload) {
 }
 
 function agentOffboard(payload) {
+  assertSchemaValidForWrite_('offboarding update');
   const targetUser = ((payload.text || '').trim() || payload.user_id);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -614,7 +619,7 @@ function getSlackScopeDiagnostics_() {
 }
 
 function agentHealth(payload) {
-  const schema = validateRequiredSchema();
+  const schema = validateSchema();
   const checks = [];
   const scopeDiag = getSlackScopeDiagnostics_();
 
@@ -622,6 +627,7 @@ function agentHealth(payload) {
   if (!schema.ok) {
     if (schema.missingSheets.length) checks.push('Missing sheets: ' + schema.missingSheets.join(', '));
     if (schema.missingColumns.length) checks.push('Missing columns: ' + schema.missingColumns.slice(0, 12).join(', ') + (schema.missingColumns.length > 12 ? ' ...' : ''));
+    if (schema.mismatchedColumns.length) checks.push('Mismatched columns: ' + schema.mismatchedColumns.slice(0, 8).join(', ') + (schema.mismatchedColumns.length > 8 ? ' ...' : ''));
   }
 
   checks.push('*Slack token:* ' + (PROPS.getProperty('SLACK_BOT_TOKEN') ? 'SET' : 'MISSING'));
@@ -635,6 +641,19 @@ function agentHealth(payload) {
 
   const summary = '*LMS Health Check*\n' + checks.join('\n');
   return postDM(payload.user_id, summary);
+}
+
+
+function agentSchema(payload) {
+  const schema = validateSchema();
+  if (schema.ok) return postDM(payload.user_id, '*Schema check:* OK. All required tabs and canonical columns are present.');
+
+  const lines = ['*Schema check:* FAIL'];
+  if (schema.missingSheets.length) lines.push('Missing sheets: ' + schema.missingSheets.join(', '));
+  if (schema.mismatchedColumns.length) lines.push('Mismatched columns: ' + schema.mismatchedColumns.slice(0, 12).join(', ') + (schema.mismatchedColumns.length > 12 ? ' ...' : ''));
+  if (schema.missingColumns.length) lines.push('Missing columns: ' + schema.missingColumns.slice(0, 12).join(', ') + (schema.missingColumns.length > 12 ? ' ...' : ''));
+  lines.push('Writes are blocked until this is fixed. Run ensureCurriculumDatabaseColumns() or align headers manually.');
+  return postDM(payload.user_id, lines.join('\n'));
 }
 
 function buildDeadLetterReport_() {
@@ -779,6 +798,7 @@ function agentHelp(payload) {
     '/startlesson — Enable learner lesson commands.',
     '/stoplesson — Pause learner lesson commands.',
     '/health — Show signing + scope diagnostics.',
+    '/schema — Validate sheet/tab schema contracts.',
     '/deadletter [report|inspect <job_id>|requeue <job_id>] — Review/requeue dead-letter jobs.'
   ];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
@@ -922,8 +942,8 @@ function agentMix(payload) {
   const query = (payload.text || '').trim().toLowerCase();
   const lessons = getAllRows(SHEET_LESSONS);
   const idxLesson = lessons.headers.indexOf('LessonID');
-  const idxTopic = lessons.headers.indexOf('Topic');
-  const idxTitle = lessons.headers.indexOf('Title');
+  const idxTopic = lessons.headers.indexOf('Focus Area');
+  const idxTitle = lessons.headers.indexOf('Lesson Title');
   const idxStatus = lessons.headers.indexOf('Status');
 
   const picks = [];
@@ -950,13 +970,13 @@ function agentMedia(payload) {
 
     const mediaInput = {
       lesson_id: lessonId,
-      title: lesson['Title'] || '',
-      module: lesson['Module'] || '',
+      title: lesson['Lesson Title'] || '',
+      module: lesson['ModuleID'] || '',
       objective: lesson['Objective'] || '',
       core_content: lesson['Core Content'] || '',
-      mission_description: lesson['Mission Description'] || '',
-      mission_format: lesson['Mission Format'] || '',
-      verification_question: lesson['Verification Question'] || ''
+      mission_description: lesson['Mission'] || '',
+      mission_format: lesson['Type'] || '',
+      verification_question: lesson['Verification'] || ''
     };
 
     const aiText = callAI('media_agent', getSystemPrompt('media_agent'), JSON.stringify(mediaInput), 700, {
