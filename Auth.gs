@@ -52,7 +52,32 @@ function validateSlackRequest(e) {
 }
 
 function isSlackTokenFallbackEnabled_() {
-  return String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || 'true').toLowerCase() === 'true';
+  return String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || 'false').toLowerCase() === 'true';
+}
+
+function markSlackRequestSeen_(key, ttlSeconds) {
+  try {
+    var cache = CacheService.getScriptCache();
+    if (cache.get(key)) return true;
+    cache.put(key, '1', Number(ttlSeconds || 600));
+    return false;
+  } catch (err) {
+    Logger.log('markSlackRequestSeen_ error: ' + err);
+    return false;
+  }
+}
+
+function isDuplicateSlackRequest_(rawBody, e) {
+  var ts = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']) || '';
+  var sig = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']) || '';
+  var key = 'slack:req:' + Utilities.base64EncodeWebSafe(ts + '|' + sig + '|' + String(rawBody || '')).replace(/=+$/,'');
+  return markSlackRequestSeen_(key, 600);
+}
+
+function isDuplicateSlackEventId_(eventId) {
+  var id = String(eventId || '').trim();
+  if (!id) return false;
+  return markSlackRequestSeen_('slack:event:' + id, 7200);
 }
 
 function extractSlackVerificationToken_(rawBody, e) {

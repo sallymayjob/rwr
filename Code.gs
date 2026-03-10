@@ -31,6 +31,11 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Step 3b - coarse request-level idempotency for Slack retries/replays.
+  if (isDuplicateSlackRequest_(rawBody, e)) {
+    return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+  }
+
   // Step 4 - for slash commands, body is form-encoded - read from e.parameter
   const command = e.parameter && e.parameter.command;
   if (command) {
@@ -69,9 +74,14 @@ function doPost(e) {
 
   if (interactionPayload) {
     handleSlackInteraction(interactionPayload);
+    if (interactionPayload.type === 'view_submission') {
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_action: 'clear' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     return ContentService
-      .createTextOutput(JSON.stringify({ response_action: 'clear' }))
-      .setMimeType(ContentService.MimeType.JSON);
+      .createTextOutput('')
+      .setMimeType(ContentService.MimeType.TEXT);
   }
 
   // Step 5b - block_actions arriving as JSON
@@ -94,6 +104,10 @@ function doPost(e) {
 
   // Step 6 - event_callback (app_mention, message.im, reaction_added)
   if (body.type === 'event_callback') {
+    if (isDuplicateSlackEventId_(body.event_id)) {
+      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+
     const event = body.event;
     const userId = event && (event.user || event.item_user);
     if (event) {
