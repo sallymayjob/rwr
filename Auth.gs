@@ -1,8 +1,8 @@
 function validateSlackRequest(e) {
   try {
-    if (!e || !e.postData || typeof e.postData.contents !== 'string') return false;
-    const rawBody = e.postData.contents;
-    const signingSecret = PROPS.getProperty('SLACK_SIGNING_SECRET') || '';
+    if (!e || !e.postData) return false;
+    const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
+    const signingSecret = String(PROPS.getProperty('SLACK_SIGNING_SECRET') || '').trim();
 
     const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
     const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
@@ -12,7 +12,7 @@ function validateSlackRequest(e) {
       return false;
     }
 
-    const tsNum = Number(timestamp);
+    const tsNum = Number(String(timestamp || '').trim());
     const now = Math.floor(Date.now() / 1000);
     if (!tsNum || Math.abs(now - tsNum) > 300) {
       Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
@@ -26,7 +26,8 @@ function validateSlackRequest(e) {
       return v.length === 1 ? '0' + v : v;
     }).join('');
     const expected = 'v0=' + hex;
-    const valid = constantTimeEqual(expected, String(slackSignature || '').trim());
+    const actual = String(slackSignature || '').trim().toLowerCase();
+    const valid = constantTimeEqual(expected, actual);
     if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
     return valid;
   } catch (err) {
