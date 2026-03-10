@@ -16,19 +16,18 @@ function doPost(e) {
     // body stays as {} and will be populated from e.parameter below
   }
 
-  // Step 2 - URL verification challenge MUST come before signature validation
-  // Slack sends this with no valid signature on first contact - this is intentional
-  if (body.type === 'url_verification') {
-    return ContentService
-      .createTextOutput(body.challenge)
-      .setMimeType(ContentService.MimeType.TEXT);
-  }
-
-  // Step 3 - validate Slack signature for all other request types
+  // Step 2 - validate Slack signature for all request types.
   if (!validateSlackRequest(e)) {
     return ContentService
       .createTextOutput(JSON.stringify({ error: 'Invalid signature' }))
       .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Step 3 - URL verification challenge after signature validation
+  if (body.type === 'url_verification') {
+    return ContentService
+      .createTextOutput(body.challenge)
+      .setMimeType(ContentService.MimeType.TEXT);
   }
 
   // Step 3b - coarse request-level idempotency for Slack retries/replays.

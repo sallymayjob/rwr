@@ -56,6 +56,15 @@ Core design goals:
 - DM messages (`message` with `channel_type=im`)
 - `reaction_added` for `white_check_mark` (`✅`)
 
+
+## Slack security + subscriptions checklist
+
+- Enable **Event Subscriptions** and set Request URL to the Apps Script web app URL.
+- Subscribe bot events: `message.channels` and `message.im` (plus other events you use, such as `app_mention` and `reaction_added`).
+- Enable **Interactivity** and set its Request URL to the same web app URL for onboarding/LMS action callbacks.
+- Configure Script Properties with `SLACK_SIGNING_SECRET` and `SLACK_AUTH_TOKEN_FALLBACK=false`.
+- The webhook entrypoint now enforces signed requests only (`X-Slack-Signature` + `X-Slack-Request-Timestamp` + raw body), rejects stale timestamps (>5 minutes), and uses constant-time signature comparison.
+
 ## Data Model (Sheets)
 
 Operational sheets:
@@ -96,7 +105,8 @@ Set Script Properties:
 - `SLACK_BOT_TOKEN`
 - `SLACK_SIGNING_SECRET`
 - `ADMIN_USER_IDS`
-- optional: `SLACK_VERIFICATION_TOKEN`, `SLACK_AUTH_TOKEN_FALLBACK` (default `false`), `DEFAULT_LESSON_CHANNEL`, `DEFAULT_ONBOARDING_CHANNEL`, `ONBOARDING_SHEET_NAME`, `BATCH_LIMIT`, `DRY_RUN`, `QUEUE_MAX_RETRIES`, `QUEUE_RETENTION_DAYS`, `QUEUE_MAX_ROWS`, `QUEUE_PRUNE_INTERVAL_MS`, `AI_DISABLED`
+- required: `SLACK_AUTH_TOKEN_FALLBACK=false` (verification token fallback is disabled; signing-secret HMAC is mandatory)
+- optional: `DEFAULT_LESSON_CHANNEL`, `DEFAULT_ONBOARDING_CHANNEL`, `ONBOARDING_SHEET_NAME`, `BATCH_LIMIT`, `DRY_RUN`, `QUEUE_MAX_RETRIES`, `QUEUE_RETENTION_DAYS`, `QUEUE_MAX_ROWS`, `QUEUE_PRUNE_INTERVAL_MS`, `AI_DISABLED`
 - AI: `GEMINI_API_KEY`, optional `GEMINI_MODEL` (default `gemini-1.5-flash`), optional per-agent Gem instruction properties like `GEMINI_GEM_PROGRESS_ASSISTANT`
 
 Then run `menuEnsureTrackingColumns()` once to align headers.

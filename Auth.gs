@@ -7,44 +7,28 @@ function validateSlackRequest(e) {
     const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
     const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
 
-    if (timestamp && slackSignature && signingSecret) {
-      const tsNum = Number(timestamp);
-      const now = Math.floor(Date.now() / 1000);
-      if (!tsNum || Math.abs(now - tsNum) > 300) {
-        Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
-        return false;
-      }
-
-      const baseString = 'v0:' + timestamp + ':' + rawBody;
-      const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
-      const hex = bytes.map(function(b) {
-        const v = (b < 0 ? b + 256 : b).toString(16);
-        return v.length === 1 ? '0' + v : v;
-      }).join('');
-      const expected = 'v0=' + hex;
-      const valid = constantTimeEqual(expected, String(slackSignature || '').trim());
-      if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
-      return valid;
-    }
-
-    if (!isSlackTokenFallbackEnabled_()) {
-      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret, and token fallback is disabled.');
+    if (!timestamp || !slackSignature || !signingSecret) {
+      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret.');
       return false;
     }
 
-    const configuredToken = String(PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '').trim();
-    const requestToken = extractSlackVerificationToken_(rawBody, e);
-
-    if (configuredToken && requestToken) {
-      const ok = constantTimeEqual(String(configuredToken), String(requestToken));
-      if (ok) {
-        Logger.log('WARNING: validateSlackRequest accepted request using verification token fallback.');
-      }
-      return ok;
+    const tsNum = Number(timestamp);
+    const now = Math.floor(Date.now() / 1000);
+    if (!tsNum || Math.abs(now - tsNum) > 300) {
+      Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
+      return false;
     }
 
-    Logger.log('validateSlackRequest rejected: token fallback enabled but token missing or invalid.');
-    return false;
+    const baseString = 'v0:' + timestamp + ':' + rawBody;
+    const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
+    const hex = bytes.map(function(b) {
+      const v = (b < 0 ? b + 256 : b).toString(16);
+      return v.length === 1 ? '0' + v : v;
+    }).join('');
+    const expected = 'v0=' + hex;
+    const valid = constantTimeEqual(expected, String(slackSignature || '').trim());
+    if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
+    return valid;
   } catch (err) {
     Logger.log('validateSlackRequest error: ' + err);
     return false;
@@ -52,7 +36,7 @@ function validateSlackRequest(e) {
 }
 
 function isSlackTokenFallbackEnabled_() {
-  return String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || 'false').toLowerCase() === 'true';
+  return false;
 }
 
 function markSlackRequestSeen_(key, ttlSeconds) {
@@ -78,44 +62,6 @@ function isDuplicateSlackEventId_(eventId) {
   var id = String(eventId || '').trim();
   if (!id) return false;
   return markSlackRequestSeen_('slack:event:' + id, 7200);
-}
-
-function extractSlackVerificationToken_(rawBody, e) {
-  let body = {};
-  try { body = JSON.parse(rawBody || '{}'); } catch (ignore) { body = {}; }
-
-  let token =
-    (body && body.token) ||
-    (e.parameter && e.parameter.token) ||
-    (e.parameters && e.parameters.token && e.parameters.token[0]) ||
-    '';
-
-  if (token) return String(token).trim();
-
-  const payloadParam =
-    (e.parameter && e.parameter.payload) ||
-    (e.parameters && e.parameters.payload && e.parameters.payload[0]) ||
-    '';
-
-  if (!payloadParam && rawBody.indexOf('payload=') !== -1) {
-    const parts = rawBody.split('&');
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i].indexOf('payload=') === 0) {
-        try {
-          const decoded = decodeURIComponent(parts[i].slice(8).replace(/\+/g, ' '));
-          const payload = JSON.parse(decoded);
-          token = payload && payload.token;
-        } catch (ignore) {}
-      }
-    }
-  } else if (payloadParam) {
-    try {
-      const payload = JSON.parse(payloadParam);
-      token = payload && payload.token;
-    } catch (ignore) {}
-  }
-
-  return String(token || '').trim();
 }
 
 function getHeaderValue(e, keys) {
