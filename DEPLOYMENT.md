@@ -53,3 +53,14 @@ All inbound Slack requests are validated with HMAC signing using:
 - raw request body
 
 Replay protection rejects timestamps outside a 5-minute window before signature comparison. Ensure `SLACK_SIGNING_SECRET` is configured and keep `SLACK_AUTH_TOKEN_FALLBACK=false`.
+
+
+## 6) Release parity checklist
+
+Before production deploy, validate command/event parity and docs syntax:
+
+- Manifest slash commands equal implemented slash handlers in `routeCommand` (`Code.gs`).
+- Manifest bot events equal implemented event handlers in `routeEvent` (`Code.gs`) for: `app_mention`, `message.channels`/`message.im`, `reaction_added`.
+- Docs examples use live syntax, especially `/submit <submit_code> <evidence>`.
+- Run: `python scripts/verify_manifest_docs_parity.py` and require PASS.
+

@@ -17,7 +17,7 @@ function ensureGovernanceSheetsAndColumns() {
     { name: 'Approvals', cols: ['ApprovalID', 'Entity_Type', 'Entity_ID', 'Requested_By', 'Approver', 'Decision', 'Decision_At', 'Notes'] },
     { name: 'Settings', cols: ['Setting_Key', 'Setting_Value', 'Updated_At', 'Updated_By'] },
     { name: 'Workflow_Rules', cols: ['RuleID', 'Rule_Name', 'Entity_Type', 'From_Status', 'To_Status', 'Guard_Condition', 'Is_Active'] },
-    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON'] },
+    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Execution_Type', 'Latency_MS', 'Failure_Reason', 'Details_JSON'] },
     { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Context_JSON', 'Retryable', 'Resolved_Status'] },
     { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Target_UserID', 'Outcome', 'Notes'] },
     { name: 'Content_Pipeline', cols: ['PipelineID', 'LessonID', 'Stage', 'Status', 'Owner', 'Started_At', 'Completed_At', 'Details_JSON'] },
@@ -37,8 +37,9 @@ function ensureGovernanceSheetsAndColumns() {
 function appendAuditLog(action, actorUserId, entityType, entityId, outcome, detailsObj) {
   try {
     ensureSheetExists_('Audit_Log');
-    ensureSheetColumnsByName_('Audit_Log', ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON']);
+    ensureSheetColumnsByName_('Audit_Log', ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Execution_Type', 'Latency_MS', 'Failure_Reason', 'Details_JSON']);
     var sheet = SS.getSheetByName('Audit_Log');
+    var details = detailsObj || {};
     sheet.appendRow([
       new Date(),
       String(action || ''),
@@ -46,7 +47,10 @@ function appendAuditLog(action, actorUserId, entityType, entityId, outcome, deta
       String(entityType || ''),
       String(entityId || ''),
       String(outcome || ''),
-      JSON.stringify(detailsObj || {})
+      String(details.execution_type || ''),
+      details.latency_ms === '' || details.latency_ms === null || typeof details.latency_ms === 'undefined' ? '' : Number(details.latency_ms),
+      String(details.failure_reason || ''),
+      JSON.stringify(details)
     ]);
   } catch (err) {
     Logger.log('appendAuditLog error: ' + err);

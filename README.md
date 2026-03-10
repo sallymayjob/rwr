@@ -32,7 +32,7 @@ Core design goals:
 ### Learner
 
 - `/learn` — Deliver your next lesson.
-- `/submit <lessonId> <evidence>` — Submit lesson verification.
+- `/submit <submit_code> <evidence>` — Submit lesson verification.
 - `/progress` — Show your current completion progress.
 - `/courses` — List available courses and enrollment status.
 - `/help` — Show command help and usage.
@@ -84,7 +84,8 @@ Canonical tab/column contracts (required headers):
 - `Learners`: `UserID`, `Name`, `Email`, `Enrolled Course`, `Current Module`, `Progress (%)`, `Status`, `Joined Date`, `Completed Missions`, `Completed Lessons`, `Last LessonID`, `Last MissionID`
 - `Lesson_Submissions`: `Timestamp`, `Learner`, `Lesson`, `MissionID`, `Submit Code`, `Evidence`, `Method`, `Score`
 - `Queue`: `job_id`, `source_event_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `payload_ref`, `last_error_class`, `last_provider_response_code`, `dead_letter_error_json`, `last_attempt_at`
-- Governance tabs: `Audit_Log`, `Error_Log`, `Admin_Actions`, `Content_Pipeline`, `Prompt_Configs`, `Gem_Roles`, `Publish_Queue`, `Generated_Drafts` (see `Sheets.gs` schema map for exact required columns).
+- `Audit_Log`: `Timestamp`, `Action`, `Actor_UserID`, `Entity_Type`, `Entity_ID`, `Outcome`, `Execution_Type`, `Latency_MS`, `Failure_Reason`, `Details_JSON`
+- Governance tabs: `Error_Log`, `Admin_Actions`, `Content_Pipeline`, `Prompt_Configs`, `Gem_Roles`, `Publish_Queue`, `Generated_Drafts` (see `Sheets.gs` schema map for exact required columns).
 
 When headers are missing/mismatched (for example `Module` instead of `ModuleID`), write operations are blocked with an actionable admin error until fixed.
 
@@ -104,6 +105,14 @@ When headers are missing/mismatched (for example `Module` instead of `ModuleID`)
 - `/progress` — learner progress summary
 - admin: `/onboard`, `/offboard`, `/enroll`, `/unenroll`, `/report`, `/gaps`, `/backup`, `/health`, `/schema`, `/deadletter`, `/startlesson`, `/stoplesson`
 
+
+## Release checklist (pre-deploy)
+
+- [ ] Manifest slash commands/events match implemented handlers in `Code.gs` (`routeCommand` and `routeEvent`).
+- [ ] Command examples in docs match current syntax, especially `/submit <submit_code> <evidence>`.
+- [ ] Queue lifecycle milestones are observable in `Audit_Log` (`RECEIVED`, `QUEUED`, `STARTED`, `COMPLETED`, `FAILED`, `DEAD_LETTER`) with actor, latency, and failure reason fields.
+- [ ] Run parity verification script: `python scripts/verify_manifest_docs_parity.py`.
+
 ## Setup
 
 Set Script Properties:
@@ -122,6 +131,7 @@ Set Script Properties:
 - Retries use exponential backoff with jitter and stop at `max_attempts`.
 - On `max_attempts` exceeded (or permanent error), the job status is set to `DEAD` and a JSON snapshot of the failure is stored in `dead_letter_error_json`.
 - Each failed attempt is audit-logged with timestamp, error class, and provider response code.
+- Queue lifecycle milestones are audit-logged as `RECEIVED`, `QUEUED`, `STARTED`, `COMPLETED`, `FAILED`, and `DEAD_LETTER` with actor, latency, and failure reason fields.
 - AI: `GEMINI_API_KEY`, optional `GEMINI_MODEL` (default `gemini-1.5-flash`), optional per-agent Gem instruction properties like `GEMINI_GEM_PROGRESS_ASSISTANT`
 
 Then run `menuEnsureTrackingColumns()` once to align headers.
