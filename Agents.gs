@@ -22,20 +22,76 @@ function logAIUsage(provider, agentName, inputApproxWords, outputApproxWords) {
 }
 
 function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
-  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
+  const response = 'Claude integration is not configured in this deployment. Falling back to command-driven LMS functions.';
   logAIUsage('claude', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
   return response;
 }
 
 function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
-  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
-  logAIUsage('gemini', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
-  return response;
+  const model = String(PROPS.getProperty('GEMINI_MODEL') || 'gemini-1.5-flash').trim();
+  const apiKey = String(PROPS.getProperty('GEMINI_API_KEY') || '').trim();
+  const disabled = String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true';
+  const effectiveMax = Math.max(64, Number(maxTokens || 300));
+
+  if (disabled || !apiKey) {
+    const fallback = 'Gemini is not configured. Please use command-driven LMS functions.';
+    logAIUsage('gemini', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(fallback));
+    return fallback;
+  }
+
+  const gemKey = 'GEMINI_GEM_' + String(agentName || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const gemInstruction = String(PROPS.getProperty(gemKey) || '').trim();
+  const finalSystemPrompt = gemInstruction ? (systemPrompt + '\n\nGem instruction:\n' + gemInstruction) : systemPrompt;
+
+  try {
+    const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
+    const payload = {
+      systemInstruction: { parts: [{ text: String(finalSystemPrompt || '') }] },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: String(userMessage || '') }]
+        }
+      ],
+      generationConfig: {
+        maxOutputTokens: effectiveMax,
+        temperature: 0.3
+      }
+    };
+
+    const res = UrlFetchApp.fetch(endpoint, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const status = res.getResponseCode();
+    const txt = res.getContentText() || '{}';
+    const data = JSON.parse(txt);
+    if (status >= 300 || data.error) {
+      throw new Error('Gemini API failed status=' + status + ' error=' + JSON.stringify(data.error || txt));
+    }
+
+    const out = (((data || {}).candidates || [])[0] || {}).content || {};
+    const parts = out.parts || [];
+    const response = parts.map(function(p) { return String((p && p.text) || ''); }).join('\n').trim();
+    const finalText = response || 'No response generated.';
+    logAIUsage('gemini', agentName || 'gemini', approxWords(finalSystemPrompt) + approxWords(userMessage), approxWords(finalText));
+    return finalText;
+  } catch (err) {
+    Logger.log('callGemini error: ' + err);
+    const fallback = 'I could not reach Gemini right now. Please retry shortly or continue with command-driven LMS functions.';
+    logAIUsage('gemini', agentName || 'gemini_error', approxWords(finalSystemPrompt) + approxWords(userMessage), approxWords(fallback));
+    return fallback;
+  }
 }
 
 function callAI(agentName, systemPrompt, userMessage, maxTokens) {
-  Logger.log('callAI disabled: ' + agentName);
-  return 'AI integrations are disabled in this deployment.';
+  const provider = getProvider(agentName);
+  if (provider === 'gemini') return callGemini(systemPrompt, userMessage, maxTokens, agentName);
+  if (provider === 'claude') return callClaude(systemPrompt, userMessage, maxTokens, agentName);
+  return callGemini(systemPrompt, userMessage, maxTokens, agentName);
 }
 
 
@@ -114,61 +170,52 @@ function agentTutor(payload) {
     return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
   }
 
-  const lessonId = getCurrentLessonId(learner);
-  if (!lessonId) return postDM(payload.user_id, 'You are up to date. No pending lesson in your current module.');
-
-  const thread = getSlackThread(lessonId);
-  if (!thread) return postDM(payload.user_id, 'No lesson found for ' + lessonId + '. Contact your administrator.');
-
-  const blocks = buildLessonBlocks(thread['Slack Thread Text'], lessonId, payload.user_id, learner._rowIndex);
-  return postDM(payload.user_id, 'Here is your next lesson.', blocks);
+  const result = postNextLessonForUser(payload.user_id);
+  if (result && result.posted) return result;
+  if (result && result.blocked) return postDM(payload.user_id, 'Next lesson is not available yet: ' + (result.reason || 'QA gate blocked delivery.'));
+  return postDM(payload.user_id, 'You are up to date. No pending lesson.');
 }
 
 function agentQuizMaster(payload) {
   if (!isLessonTriggerActive()) return sendAutomatedMessageOnce(payload.user_id, 'lessons_paused', 'Lessons are currently paused.', null, '/help');
   const learner = getLearnerRecord(payload.user_id);
-  if (!learner) {
-    const workflowLink = PROPS.getProperty('WORKFLOW_ENROLL_LINK') || '';
-    if (workflowLink) {
-      return postDM(payload.user_id, "You're not enrolled yet. Click Enrol to get started.", [
-        { type: 'section', text: { type: 'mrkdwn', text: "You're not enrolled yet. Click *Enrol* to get started." } },
-        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Enrol' }, url: workflowLink }] }
-      ]);
-    }
-    return sendAutomatedMessageOnce(payload.user_id, "not_enrolled", "You're not enrolled yet.", null, "/help");
-  }
+  if (!learner) return sendAutomatedMessageOnce(payload.user_id, 'not_enrolled', "You're not enrolled yet.", null, '/help');
 
-  const txt = (payload.text || '').trim();
+  const txt = String(payload.text || '').trim();
   const parts = txt.split(/\s+/);
-  if (parts.length < 2) {
-    return postDM(payload.user_id, 'Usage: /submit {lessonId} {your verification evidence}');
-  }
+  if (parts.length < 2) return postDM(payload.user_id, 'Usage: /submit <submit_code> <evidence>');
 
-  const lessonId = parts.shift();
+  const submitCode = parts.shift();
   const evidence = parts.join(' ');
+  const mission = getMissionBySubmitCode(submitCode);
+  if (!mission) return postDM(payload.user_id, 'Submit Code not found in Missions: ' + submitCode);
+
+  const lessonId = String(mission['LessonID'] || '').trim();
+  const missionId = String(mission['MissionID'] || '').trim();
+  if (!lessonId || !missionId) return postDM(payload.user_id, 'Mission mapping is incomplete for Submit Code: ' + submitCode);
+
   const prompt = getSystemPrompt('quiz_master').replace('{lessonId}', lessonId);
+  const aiText = callAI('quiz_master', prompt, 'Mission: ' + missionId + '\nEvidence:\n' + evidence, 300);
 
-  const aiText = callAI('quiz_master', prompt, 'Submission evidence:\n' + evidence, 300);
-  let score = 0;
+  let score = evidence.length > 40 ? 70 : 45;
   let feedback = aiText;
-  let passed = false;
-
+  let passed = score >= 60;
   try {
     const parsed = JSON.parse(aiText);
-    score = Number(parsed.score || 0);
+    score = Number(parsed.score || score);
     feedback = parsed.feedback || aiText;
-    passed = !!parsed.passed;
+    passed = parsed.passed == null ? (score >= 60) : !!parsed.passed;
   } catch (err) {
     Logger.log('Quiz parse fallback: ' + err);
-    score = evidence.length > 40 ? 70 : 45;
-    passed = score >= 60;
   }
 
-  writeSubmission(lessonId, payload.user_id, score, 'slash_command');
-  updateLearnerProgress(payload.user_id, lessonId);
+  writeSubmission(lessonId, payload.user_id, score, 'slash_command', missionId, submitCode, evidence);
+  updateLearnerProgress(payload.user_id, lessonId, missionId);
 
-  const resultText = '*Lesson:* ' + lessonId + '\n*Score:* ' + score + '\n*Status:* ' + (passed ? 'Passed [done]' : 'Needs improvement');
-  return postDM(payload.user_id, resultText + '\n\n' + feedback);
+  const next = getNextLessonForLearner(payload.user_id);
+  const nextLine = next ? ('\n*Next Lesson:* ' + next + ' (use /learn)') : '\n*Next Lesson:* You are up to date.';
+  const resultText = '*Mission:* ' + missionId + '\n*Lesson:* ' + lessonId + '\n*Score:* ' + score + '\n*Status:* ' + (passed ? 'Passed [done]' : 'Needs improvement');
+  return postDM(payload.user_id, resultText + nextLine + '\n\n' + feedback);
 }
 
 function agentProgress(payload) {
@@ -187,7 +234,7 @@ function agentProgress(payload) {
 
   const submissions = getLearnerSubmissions(payload.user_id);
   const moduleRow = getModuleRow(learner['Current Module']);
-  const nextLessonId = getCurrentLessonId(learner) || '';
+  const nextLessonId = getNextLessonForLearner(payload.user_id) || '';
   const progressPayload = {
     name: learner['Name'] || learner['UserID'],
     current_module: learner['Current Module'] || '',
@@ -255,19 +302,61 @@ function agentUnenroll(payload) {
   return postDM(payload.user_id, 'Learner not found.');
 }
 
+
+function ensureLearnerColumnsForOnboarding_() {
+  var sheet = SS.getSheetByName(SHEET_LEARNERS);
+  if (!sheet) throw new Error('Missing sheet: ' + SHEET_LEARNERS);
+
+  var required = ['UserID', 'Name', 'Email', 'Enrolled Course', 'Current Module', 'Progress (%)', 'Status', 'Joined Date', 'Lesson Submissions'];
+  var lastCol = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) { return String(h || '').trim(); });
+  var changed = false;
+
+  required.forEach(function(col) {
+    if (headers.indexOf(col) === -1) {
+      headers.push(col);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  return headers;
+}
+
+function resolveOnboardTargetUser_(rawTarget, fallbackUserId) {
+  var input = String(rawTarget || '').trim();
+  if (!input) return String(fallbackUserId || '').trim();
+
+  var firstToken = input.split(/\s+/)[0] || input;
+  var mentionMatch = firstToken.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]+)?>$/i);
+  if (mentionMatch) return mentionMatch[1];
+  if (/^[UW][A-Z0-9]+$/i.test(firstToken)) return firstToken;
+
+  var resolved = resolveSlackUserId(firstToken) || resolveSlackUserId(input);
+  if (resolved) return resolved;
+
+  return String(fallbackUserId || '').trim();
+}
+
 function agentOnboard(payload) {
-  var rawTarget = String((payload.text || '').trim() || payload.user_id);
-  var targetUser = resolveSlackUserId(rawTarget) || rawTarget;
-  if (!/^U[A-Z0-9]+$/i.test(targetUser)) {
+  var rawTarget = String((payload.text || '').trim());
+  var targetUser = resolveOnboardTargetUser_(rawTarget, payload.user_id);
+  if (!/^[UW][A-Z0-9]+$/i.test(targetUser)) {
     return postDM(payload.user_id, 'Could not resolve user. Use /onboard @username or /onboard UXXXXXXXX.');
   }
 
-  var info = getUserInfo(targetUser);
-  if (!info) return postDM(payload.user_id, 'Unable to fetch Slack user profile.');
+  var info = getUserInfo(targetUser) || { name: '', email: '', lookup_error: 'users_info_failed' };
+  if (info.lookup_error) {
+    Logger.log('agentOnboard warning: users.info failed for ' + targetUser + ' with error=' + info.lookup_error);
+  }
 
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    ensureLearnerColumnsForOnboarding_();
     var data = getAllRows(SHEET_LEARNERS);
     var idxUser = data.headers.indexOf('UserID');
     var idxName = data.headers.indexOf('Name');
@@ -288,22 +377,22 @@ function agentOnboard(payload) {
     }
 
     if (foundRow > 0) {
-      data.sheet.getRange(foundRow, idxName + 1).setValue(info.name || '');
-      data.sheet.getRange(foundRow, idxEmail + 1).setValue(info.email || '');
-      data.sheet.getRange(foundRow, idxCourse + 1).setValue('COURSE_12M');
-      data.sheet.getRange(foundRow, idxModule + 1).setValue('M0');
-      data.sheet.getRange(foundRow, idxStatus + 1).setValue('Active');
+      if (idxName >= 0) data.sheet.getRange(foundRow, idxName + 1).setValue(info.name || '');
+      if (idxEmail >= 0) data.sheet.getRange(foundRow, idxEmail + 1).setValue(info.email || '');
+      if (idxCourse >= 0) data.sheet.getRange(foundRow, idxCourse + 1).setValue('COURSE_12M');
+      if (idxModule >= 0) data.sheet.getRange(foundRow, idxModule + 1).setValue('M0');
+      if (idxStatus >= 0) data.sheet.getRange(foundRow, idxStatus + 1).setValue('Active');
     } else {
       var row = [];
-      row[idxUser] = targetUser;
-      row[idxName] = info.name || '';
-      row[idxEmail] = info.email || '';
-      row[idxCourse] = 'COURSE_12M';
-      row[idxModule] = 'M0';
-      row[idxProgress] = 0;
-      row[idxStatus] = 'Active';
-      row[idxJoined] = new Date();
-      row[idxSubs] = '';
+      if (idxUser >= 0) row[idxUser] = targetUser;
+      if (idxName >= 0) row[idxName] = info.name || '';
+      if (idxEmail >= 0) row[idxEmail] = info.email || '';
+      if (idxCourse >= 0) row[idxCourse] = 'COURSE_12M';
+      if (idxModule >= 0) row[idxModule] = 'M0';
+      if (idxProgress >= 0) row[idxProgress] = 0;
+      if (idxStatus >= 0) row[idxStatus] = 'Active';
+      if (idxJoined >= 0) row[idxJoined] = new Date();
+      if (idxSubs >= 0) row[idxSubs] = '';
       var normalized = data.headers.map(function(_, idx) { return row[idx] == null ? '' : row[idx]; });
       data.sheet.appendRow(normalized);
     }
@@ -311,23 +400,8 @@ function agentOnboard(payload) {
   } finally {
     lock.releaseLock();
   }
-
-  var learner = getLearnerRecord(targetUser);
-  var firstLesson = getFirstLessonIdForModule('M0') || getFirstReadyLessonIdForCourse('COURSE_12M');
-  var orientationText = '*Welcome to RWR LMS Orientation (M0)*\nYou are now onboarded and enrolled in COURSE_12M.';
-  postDM(targetUser, orientationText);
-
-  if (firstLesson) {
-    var thread = getSlackThread(firstLesson);
-    if (thread) {
-      var blocks = buildLessonBlocks(thread['Slack Thread Text'], firstLesson, targetUser, learner ? learner._rowIndex : 0);
-      postDM(targetUser, 'Your first lesson is ready.', blocks);
-    } else {
-      postDM(targetUser, 'You are onboarded. First lesson ID: ' + firstLesson + '.');
-    }
-  }
-
-  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '> with M0 orientation and first lesson sent.\n\nNext command: /progress');
+  var profileWarning = info.lookup_error ? '\n(Warning: profile lookup failed: ' + info.lookup_error + ')' : '';
+  return postDM(payload.user_id, 'Onboard complete for <@' + targetUser + '>.' + profileWarning + '\n\nNext command: /learn');
 }
 
 function agentOffboard(payload) {
@@ -374,6 +448,27 @@ function agentReport(payload) {
 
   const aiText = callAI('report_generator', getSystemPrompt('report_generator'), JSON.stringify(reportPayload), 500);
   return postDM(payload.user_id, aiText, buildReportBlocks(learners, submissions, modules));
+}
+
+function agentHealth(payload) {
+  const schema = validateRequiredSchema();
+  const checks = [];
+
+  checks.push('*Schema:* ' + (schema.ok ? 'OK' : 'FAIL'));
+  if (!schema.ok) {
+    if (schema.missingSheets.length) checks.push('Missing sheets: ' + schema.missingSheets.join(', '));
+    if (schema.missingColumns.length) checks.push('Missing columns: ' + schema.missingColumns.slice(0, 12).join(', ') + (schema.missingColumns.length > 12 ? ' ...' : ''));
+  }
+
+  checks.push('*Slack token:* ' + (PROPS.getProperty('SLACK_BOT_TOKEN') ? 'SET' : 'MISSING'));
+  checks.push('*Signing secret:* ' + (PROPS.getProperty('SLACK_SIGNING_SECRET') ? 'SET' : 'MISSING'));
+  checks.push('*Sheets ID:* ' + (PROPS.getProperty('SHEETS_ID') ? 'SET' : 'MISSING'));
+  checks.push('*Lesson trigger:* ' + (isLessonTriggerActive() ? 'ACTIVE' : 'PAUSED'));
+  checks.push('*Token fallback auth:* ' + (isSlackTokenFallbackEnabled_() ? 'ENABLED' : 'DISABLED'));
+  checks.push('*AI disabled:* ' + (String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true' ? 'YES' : 'NO'));
+
+  const summary = '*LMS Health Check*\n' + checks.join('\n');
+  return postDM(payload.user_id, summary);
 }
 
 function agentHelp(payload) {
@@ -441,7 +536,7 @@ function agentCert(payload) {
 
   const moduleId = learner['Current Module'];
   const lessons = getAllRows(SHEET_LESSONS);
-  const lIdxModule = lessons.headers.indexOf('Module');
+  const lIdxModule = lessons.headers.indexOf('ModuleID');
   const lIdxStatus = lessons.headers.indexOf('Status');
   const lIdxLesson = lessons.headers.indexOf('LessonID');
 
@@ -715,13 +810,18 @@ function handleDirectMessage(event) {
 function handleReaction(event) {
   try {
     if (event.reaction !== 'white_check_mark') return;
-    let lessonId = '';
-    const m = (event.item && event.item.ts ? String(event.item.ts) : '').match(/M\d{2}-W\d{2}-(L\d{2}(?:\.\d+)?|DEEP)/);
-    if (m) lessonId = m[0];
-    if (!lessonId) return;
+    const channel = event.item && event.item.channel ? String(event.item.channel) : '';
+    const ts = event.item && event.item.ts ? String(event.item.ts) : '';
+    const delivery = findLessonDeliveryBySlackMessage(channel, ts);
+    if (!delivery) return;
 
-    writeSubmission(lessonId, event.user, null, 'reaction');
-    updateLearnerProgress(event.user, lessonId);
+    const lessonId = String(delivery['LessonID'] || '');
+    const submitCode = String(delivery['Submit Code'] || '');
+    const mission = getMissionBySubmitCode(submitCode);
+    const missionId = mission ? String(mission['MissionID'] || '') : '';
+
+    writeSubmission(lessonId, event.user, '', 'reaction', missionId, submitCode, 'reaction:white_check_mark');
+    updateLearnerProgress(event.user, lessonId, missionId);
     return postDM(event.user, 'Recorded completion for ' + lessonId + ' [done]');
   } catch (err) {
     Logger.log('handleReaction error: ' + err);

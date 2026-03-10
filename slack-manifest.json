@@ -21,8 +21,8 @@
       {
         "command": "/submit",
         "url": "https://SCRIPT_WEB_APP_URL",
-        "description": "Submit lesson verification",
-        "usage_hint": "<lessonId> <evidence>",
+        "description": "Submit mission evidence by submit code",
+        "usage_hint": "<submit_code> <evidence>",
         "should_escape": false
       },
       {
@@ -142,6 +142,13 @@
         "url": "https://SCRIPT_WEB_APP_URL",
         "description": "Admin: unenroll a learner",
         "usage_hint": "<userId>",
+        "should_escape": false
+      },
+      {
+        "command": "/health",
+        "url": "https://SCRIPT_WEB_APP_URL",
+        "description": "Admin: run LMS health checks",
+        "usage_hint": "",
         "should_escape": false
       }
     ],

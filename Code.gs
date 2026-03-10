@@ -31,33 +31,62 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Step 3b - coarse request-level idempotency for Slack retries/replays.
+  if (isDuplicateSlackRequest_(rawBody, e)) {
+    return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+  }
+
   // Step 4 - for slash commands, body is form-encoded - read from e.parameter
   const command = e.parameter && e.parameter.command;
   if (command) {
-    const payload = {
-      command: command,
-      text: e.parameter.text || '',
-      user_id: e.parameter.user_id,
-      user_name: e.parameter.user_name,
-      channel_id: e.parameter.channel_id,
-      team_id: e.parameter.team_id,
-      response_url: e.parameter.response_url
-    };
-    appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
-    processQueuedPipeline();
-    return ContentService
-      .createTextOutput(JSON.stringify({ response_type: 'in_channel', text: '⏳ On it...' }))
-      .setMimeType(ContentService.MimeType.JSON);
+    try {
+      const payload = {
+        command: command,
+        text: e.parameter.text || '',
+        user_id: e.parameter.user_id,
+        user_name: e.parameter.user_name,
+        channel_id: e.parameter.channel_id,
+        team_id: e.parameter.team_id,
+        response_url: e.parameter.response_url
+      };
+      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
+      scheduleQueuedPipeline_();
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    } catch (cmdErr) {
+      Logger.log('doPost slash command queue error: ' + cmdErr);
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⚠️ Command received but queue write failed. Please retry once.' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
   }
 
-  // Step 5 - block_actions (button clicks)
-  if (body.type === 'block_actions') {
-    const action = body.actions && body.actions[0];
-    const userId = body.user && body.user.id;
-    if (action && userId) {
-      appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: body }));
-      processQueuedPipeline();
+  // Step 5 - Slack interactivity payloads (form-encoded payload JSON)
+  var interactionPayload = null;
+  if (e.parameter && e.parameter.payload) {
+    try {
+      interactionPayload = JSON.parse(e.parameter.payload);
+    } catch (ignore) {
+      interactionPayload = null;
     }
+  }
+
+  if (interactionPayload) {
+    handleSlackInteraction(interactionPayload);
+    if (interactionPayload.type === 'view_submission') {
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_action: 'clear' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    return ContentService
+      .createTextOutput('')
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Step 5b - block_actions arriving as JSON
+  if (body.type === 'block_actions' || body.type === 'view_submission') {
+    handleSlackInteraction(body);
     return ContentService
       .createTextOutput('')
       .setMimeType(ContentService.MimeType.TEXT);
@@ -67,6 +96,7 @@ function doPost(e) {
   const workflowPayload = extractWorkflowEnrollPayload(body, e.parameter || {});
   if (workflowPayload) {
     appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }));
+    scheduleQueuedPipeline_();
     return ContentService
       .createTextOutput(JSON.stringify({ ok: true, message: 'Enrollment queued' }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -74,11 +104,15 @@ function doPost(e) {
 
   // Step 6 - event_callback (app_mention, message.im, reaction_added)
   if (body.type === 'event_callback') {
+    if (isDuplicateSlackEventId_(body.event_id)) {
+      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+
     const event = body.event;
     const userId = event && (event.user || event.item_user);
     if (event) {
       appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }));
-      processQueuedPipeline();
+      scheduleQueuedPipeline_();
     }
     return ContentService
       .createTextOutput('')
@@ -91,10 +125,112 @@ function doPost(e) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+
+function scheduleQueuedPipeline_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(3000)) return;
+  try {
+    // Keep slash-command ack path fast: do not wait on locks in webhook request path.
+    var now = Date.now();
+    var notBefore = Number(PROPS.getProperty('QUEUE_TRIGGER_NOT_BEFORE_MS') || 0);
+    if (notBefore && now < notBefore) return;
+
+    const triggers = ScriptApp.getProjectTriggers();
+    const exists = triggers.some(function(t) {
+      return t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline';
+    });
+
+    if (!exists) {
+      ScriptApp.newTrigger('processQueuedPipeline')
+        .timeBased()
+        .after(10 * 1000)
+        .create();
+      Logger.log('Scheduled one-shot processQueuedPipeline trigger (~10s).');
+    }
+
+    PROPS.setProperty('QUEUE_TRIGGER_NOT_BEFORE_MS', String(now + 8000));
+  } catch (err) {
+    Logger.log('scheduleQueuedPipeline_ error: ' + err);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+function clearQueuedPipelineTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processQueuedPipeline') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+
+function stopQueuedPipelineLoop() {
+  clearQueuedPipelineTriggers_();
+  PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+  Logger.log('All processQueuedPipeline triggers removed and debounce reset.');
+}
+
+function normalizeCommandText_(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function shouldSkipDuplicateCommand_(payload) {
+  try {
+    var cmd = String(payload && payload.command || '').trim();
+    var user = String(payload && payload.user_id || '').trim();
+    var text = normalizeCommandText_(payload && payload.text || '');
+    if (!cmd || !user) return false;
+
+    var key = 'CMD_DEDUPE_' + Utilities.base64EncodeWebSafe(cmd + '|' + user + '|' + text).replace(/=+$/,'');
+    var now = Date.now();
+    var ttlMs = Number(PROPS.getProperty('COMMAND_DEDUPE_TTL_MS') || 120000);
+    var last = Number(PROPS.getProperty(key) || 0);
+
+    if (last && (now - last) < ttlMs) {
+      Logger.log('Skipping duplicate command ' + cmd + ' for user ' + user + ' within dedupe window.');
+      return true;
+    }
+
+    PROPS.setProperty(key, String(now));
+    return false;
+  } catch (err) {
+    Logger.log('shouldSkipDuplicateCommand_ error: ' + err);
+    return false;
+  }
+}
+
+
+function hasPendingQueueJobs_() {
+  try {
+    ensureQueueSheet();
+    const data = getAllRows(SHEET_QUEUE);
+    const idxStatus = data.headers.indexOf('Status');
+    if (idxStatus === -1) return false;
+    for (let i = 0; i < data.rows.length; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim();
+      if (status === 'PENDING' || status === 'RUNNING') return true;
+    }
+    return false;
+  } catch (err) {
+    Logger.log('hasPendingQueueJobs_ error: ' + err);
+    return false;
+  }
+}
+
 function processQueuedPipeline() {
   const start = Date.now();
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return;
+  if (!lock.tryLock(5000)) {
+    scheduleQueuedPipeline_();
+    return;
+  }
+
+  const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
+  const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
+  const maxRetries = Number(PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
 
   try {
     ensureQueueSheet();
@@ -103,23 +239,46 @@ function processQueuedPipeline() {
     const rows = data.rows;
     const idxPayload = headers.indexOf('Payload_Json');
     const idxStatus = headers.indexOf('Status');
+    const idxRetry = headers.indexOf('Retry_Count');
+    const idxError = headers.indexOf('Last_Error');
 
-    const toRun = [];
-    for (let i = 0; i < rows.length; i++) {
-      if (String(rows[i][idxStatus]) === 'PENDING') {
-        rows[i][idxStatus] = 'RUNNING';
-        toRun.push(i);
-      }
+    if (idxPayload === -1 || idxStatus === -1 || idxRetry === -1 || idxError === -1) {
+      throw new Error('Queue sheet headers are invalid. Expected Payload_Json, Status, Retry_Count, Last_Error.');
     }
 
-    for (let j = 0; j < toRun.length; j++) {
-      const rowIdx = toRun[j];
+    const candidates = [];
+    for (let i = 0; i < rows.length; i++) {
+      const status = String(rows[i][idxStatus] || '').trim();
+      if (status === 'PENDING') {
+        candidates.push(i);
+      }
+      if (candidates.length >= batchLimit) break;
+    }
+
+    let processed = 0;
+    for (let j = 0; j < candidates.length; j++) {
+      if (Date.now() - start >= maxRuntimeMs) {
+        Logger.log('processQueuedPipeline time budget reached; stopping early. processed=' + processed);
+        break;
+      }
+
+      const rowIdx = candidates[j];
+      const sheetRow = rowIdx + 2;
+
+      // Mark RUNNING per row before work so stale work can be retried on next run.
+      data.sheet.getRange(sheetRow, idxStatus + 1).setValue('RUNNING');
+      data.sheet.getRange(sheetRow, idxError + 1).setValue('');
+
       try {
         const payloadJson = rows[rowIdx][idxPayload];
         const job = JSON.parse(payloadJson || '{}');
 
         if (job.kind === 'command') {
-          routeCommand(job.payload);
+          if (shouldSkipDuplicateCommand_(job.payload)) {
+            // Intentionally skip duplicate command to prevent repeated onboarding/posts.
+          } else {
+            routeCommand(job.payload);
+          }
         } else if (job.kind === 'event') {
           routeEvent(job.payload);
         } else if (job.kind === 'workflow_enroll') {
@@ -130,37 +289,62 @@ function processQueuedPipeline() {
             try {
               const value = JSON.parse(action.value);
               if (value.lesson_id && value.user_id) {
-                writeSubmission(value.lesson_id, value.user_id, null, 'slash_command');
-                updateLearnerProgress(value.user_id, value.lesson_id);
+                var delivery = getLessonDeliveryRow(value.lesson_id);
+                var submitCode = delivery ? String(delivery['Submit Code'] || '') : '';
+                var mission = getMissionBySubmitCode(submitCode);
+                var missionId = mission ? String(mission['MissionID'] || '') : '';
+                writeSubmission(value.lesson_id, value.user_id, '', 'block_action', missionId, submitCode, 'button_mark_complete');
+                updateLearnerProgress(value.user_id, value.lesson_id, missionId);
               }
             } catch (parseErr) {
               Logger.log('block_action parse error: ' + parseErr);
             }
           }
         } else {
-          Logger.log('Unknown queue kind at row ' + (rowIdx + 2));
+          Logger.log('Unknown queue kind at row ' + sheetRow);
         }
 
-        rows[rowIdx][idxStatus] = 'DONE';
+        data.sheet.getRange(sheetRow, idxStatus + 1).setValue('DONE');
+        appendAuditLog('QUEUE_JOB_DONE', (job && job.payload && (job.payload.user_id || job.payload.user)) || '', 'Queue', String(sheetRow), 'DONE', { kind: job.kind || '' });
       } catch (errJob) {
-        Logger.log('Queue row error ' + (rowIdx + 2) + ': ' + errJob);
-        rows[rowIdx][idxStatus] = 'ERROR';
+        Logger.log('Queue row error ' + sheetRow + ': ' + errJob);
+        const priorRetry = Number(rows[rowIdx][idxRetry] || 0);
+        const nextRetry = priorRetry + 1;
+        data.sheet.getRange(sheetRow, idxRetry + 1).setValue(nextRetry);
+        data.sheet.getRange(sheetRow, idxError + 1).setValue(String(errJob));
+        data.sheet.getRange(sheetRow, idxStatus + 1).setValue(nextRetry >= maxRetries ? 'DEAD' : 'PENDING');
+        appendErrorLog('processQueuedPipeline', 'QUEUE_JOB_ERROR', String(errJob), { sheet_row: sheetRow, retry_count: nextRetry, payload_json: rows[rowIdx][idxPayload] || '' }, nextRetry < maxRetries);
       }
-    }
 
-    if (rows.length) {
-      data.sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+      processed++;
     }
 
     SpreadsheetApp.flush();
-    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, jobs=' + toRun.length);
+    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, processed=' + processed + ', candidates=' + candidates.length);
   } catch (err) {
     Logger.log('processQueuedPipeline error: ' + err);
   } finally {
+    try {
+      if (hasPendingQueueJobs_()) {
+        scheduleQueuedPipeline_();
+      } else {
+        clearQueuedPipelineTriggers_();
+        PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+      }
+
+      // Opportunistic queue maintenance to keep Queue scans bounded.
+      var lastPruneMs = Number(PROPS.getProperty('QUEUE_LAST_PRUNE_MS') || 0);
+      var pruneIntervalMs = Number(PROPS.getProperty('QUEUE_PRUNE_INTERVAL_MS') || (60 * 60 * 1000));
+      if ((Date.now() - lastPruneMs) >= pruneIntervalMs) {
+        pruneQueueRows_();
+        PROPS.setProperty('QUEUE_LAST_PRUNE_MS', String(Date.now()));
+      }
+    } catch (cleanupErr) {
+      Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);
+    }
     lock.releaseLock();
   }
 }
-
 function routeCommand(payload) {
   switch (payload.command) {
     case '/learn': return agentTutor(payload);
@@ -175,6 +359,7 @@ function routeCommand(payload) {
     case '/report': return adminOnly(payload, function() { return agentReport(payload); });
     case '/gaps': return adminOnly(payload, function() { return agentGaps(payload); });
     case '/backup': return adminOnly(payload, function() { return agentBackup(payload); });
+    case '/health': return adminOnly(payload, function() { return agentHealth(payload); });
     case '/cert': return adminOnly(payload, function() { return agentCert(payload); });
     case '/courses': return agentCourses(payload);
     case '/help': return agentHelp(payload);

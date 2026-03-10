@@ -52,15 +52,22 @@ function postDM(userId, text, blocks) {
 }
 
 function getUserInfo(userId) {
-  const data = slackFetch('users.info', { user: userId });
-  if (!data.ok || !data.user) return null;
+  const target = String(userId || '').trim();
+  if (!target) return { name: '', email: '', lookup_error: 'missing_user_id' };
+
+  const data = slackFetch('users.info', { user: target });
+  if (!data.ok || !data.user) {
+    return { name: '', email: '', lookup_error: data && data.error ? data.error : 'users_info_failed' };
+  }
+
   return {
     name: data.user.real_name || data.user.name || '',
-    email: (data.user.profile && data.user.profile.email) || ''
+    email: (data.user.profile && data.user.profile.email) || '',
+    lookup_error: ''
   };
 }
 
-function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex) {
+function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex, submitCode) {
   return [
     {
       type: 'section',
@@ -77,7 +84,8 @@ function buildLessonBlocks(slackThreadText, lessonId, userId, rowIndex) {
           value: JSON.stringify({
             lesson_id: lessonId,
             user_id: userId,
-            row_index: rowIndex
+            row_index: rowIndex,
+            submit_code: submitCode || ''
           })
         }
       ]
@@ -152,9 +160,10 @@ function resolveSlackUserId(query) {
   var q = String(query || '').trim();
   if (!q) return '';
 
-  var mention = q.match(/^<@([A-Z0-9]+)>$/i);
+  // Slash command mentions can arrive as <@U12345> or <@U12345|name>
+  var mention = q.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]+)?>$/i);
   if (mention) return mention[1];
-  if (/^U[A-Z0-9]+$/i.test(q)) return q;
+  if (/^[UW][A-Z0-9]+$/i.test(q)) return q;
 
   q = q.replace(/^@/, '').toLowerCase();
   var token = PROPS.getProperty('SLACK_BOT_TOKEN');
@@ -177,7 +186,8 @@ function resolveSlackUserId(query) {
         var candidates = [
           String(m.name || '').toLowerCase(),
           String((m.profile && m.profile.display_name) || '').toLowerCase(),
-          String((m.profile && m.profile.real_name) || '').toLowerCase()
+          String((m.profile && m.profile.real_name) || '').toLowerCase(),
+          String((m.profile && m.profile.email) || '').toLowerCase()
         ];
         if (candidates.indexOf(q) !== -1) return m.id;
       }
