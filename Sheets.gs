@@ -53,7 +53,7 @@ function validateRequiredSchema() {
     { name: SHEET_SLACK_DELIVERY, cols: ['LessonID', 'Slack Thread Text', 'Submit Code', 'Slack TS', 'Slack Channel'] },
     { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
     { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
-    { name: SHEET_QUEUE, cols: ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'] },
+    { name: SHEET_QUEUE, cols: ['job_id', 'source_event_id', 'status', 'attempt_count', 'next_attempt_at', 'payload_ref'] },
     { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON'] },
     { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
     { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
@@ -299,12 +299,43 @@ function recordLessonMetricTouch(lessonId) {
   }
 }
 
-function appendToQueue(userId, payloadJson) {
+function newQueueJobId_() {
+  return 'job_' + Utilities.getUuid();
+}
+
+function appendToQueue(userId, payloadJson, metadata) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) throw new Error('Queue lock unavailable for append');
+  if (!lock.tryLock(1200)) throw new Error('Queue lock unavailable for append');
+
   try {
     const sheet = ensureQueueSheet();
-    sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING', 0, '']);
+    const now = new Date();
+    const meta = metadata || {};
+    const payloadObject = JSON.parse(payloadJson || '{}');
+    const kind = String(meta.kind || payloadObject.kind || '').trim();
+    const nextAttemptAt = meta.next_attempt_at ? new Date(meta.next_attempt_at) : now;
+    const sourceEventId = String(meta.source_event_id || '').trim();
+    const responseUrl = String(meta.response_url || '').trim();
+
+    const row = [
+      String(meta.job_id || newQueueJobId_()),
+      sourceEventId,
+      userId || '',
+      kind,
+      payloadJson || '{}',
+      String(meta.payload_ref || '').trim(),
+      'PENDING',
+      Number(meta.attempt_count || 0),
+      nextAttemptAt,
+      now,
+      '',
+      '',
+      '',
+      '',
+      responseUrl
+    ];
+    sheet.appendRow(row);
+    return row[0];
   } finally {
     lock.releaseLock();
   }
@@ -318,8 +349,8 @@ function pruneQueueRows_() {
 
     const data = getAllRows(SHEET_QUEUE);
     const headers = data.headers;
-    const idxCreated = headers.indexOf('Created');
-    const idxStatus = headers.indexOf('Status');
+    const idxCreated = headers.indexOf('created_at');
+    const idxStatus = headers.indexOf('status');
     if (idxCreated < 0 || idxStatus < 0) return { ok: false, skipped: true };
 
     const deleteRows = [];
@@ -373,17 +404,34 @@ function updateLessonMediaColumns(lessonId, mediaRequired, mediaBriefText) {
 
 function ensureQueueSheet() {
   let sheet = SS.getSheetByName(SHEET_QUEUE);
-  const headers = ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'];
+  const headers = [
+    'job_id',
+    'source_event_id',
+    'user_id',
+    'kind',
+    'payload_json',
+    'payload_ref',
+    'status',
+    'attempt_count',
+    'next_attempt_at',
+    'created_at',
+    'started_at',
+    'finished_at',
+    'processing_latency_ms',
+    'last_error',
+    'response_url'
+  ];
   if (!sheet) {
     sheet = SS.insertSheet(SHEET_QUEUE);
-    sheet.appendRow(headers);
+  }
+
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     return sheet;
   }
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(headers);
-  } else {
-    ensureSheetColumnsByName_(SHEET_QUEUE, headers);
-  }
+
+  ensureSheetColumnsByName_(SHEET_QUEUE, headers);
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   return sheet;
 }
 

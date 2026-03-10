@@ -22,6 +22,24 @@ function slackFetch(endpoint, payload) {
   }
 }
 
+
+function postToResponseUrl(url, payload) {
+  try {
+    var target = String(url || '').trim();
+    if (!target) return { ok: false, error: 'missing_response_url' };
+    var res = UrlFetchApp.fetch(target, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload || {}),
+      muteHttpExceptions: true
+    });
+    return { ok: res.getResponseCode() < 300, status: res.getResponseCode() };
+  } catch (err) {
+    Logger.log('postToResponseUrl error: ' + err);
+    return { ok: false, error: String(err) };
+  }
+}
+
 function postMessage(channelId, text, blocks) {
   return slackFetch('chat.postMessage', {
     channel: channelId,

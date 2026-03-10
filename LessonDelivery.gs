@@ -460,7 +460,11 @@ function routeSlackBlockAction_(payload) {
 
   if (actionId === 'lesson_complete') {
     var userId = (payload.user && payload.user.id) || '';
-    appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: payload }));
+    appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: payload }), {
+      kind: 'block_action',
+      source_event_id: String((payload && payload.trigger_id) || ''),
+      response_url: String((payload && payload.response_url) || '')
+    });
     scheduleQueuedPipeline_();
     return { ok: true, queued: true };
   }
