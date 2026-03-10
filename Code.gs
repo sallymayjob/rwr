@@ -76,9 +76,7 @@ function doPost(e) {
       scheduleDeferredSlashCommandWorker_();
 
       // Keep Slack slash-command ACK under 3 seconds to avoid operation_timeout.
-      return ContentService
-        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Received. Processing now…' }))
-        .setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
     } catch (cmdErr) {
       Logger.log('doPost slash command defer error: ' + cmdErr);
       return ContentService
@@ -347,6 +345,9 @@ function processDeferredSlashCommandJobs() {
   if (!lock.tryLock(2000)) return;
 
   try {
+    // One-shot worker triggers can accumulate under burst load; clear them up front.
+    clearDeferredSlashTriggers_();
+
     var all = PROPS.getProperties();
     var keys = Object.keys(all).filter(function(k) { return k.indexOf('SLASH_DEFERRED_JOB_') === 0; }).sort();
     var maxPerRun = Number(PROPS.getProperty('SLASH_DEFERRED_BATCH_LIMIT') || 10);
@@ -382,7 +383,7 @@ function processDeferredSlashCommandJobs() {
         return t.getHandlerFunction && t.getHandlerFunction() === 'processDeferredSlashCommandJobs';
       });
       if (!hasWorker) {
-        ScriptApp.newTrigger('processDeferredSlashCommandJobs').timeBased().after(1000).create();
+        ScriptApp.newTrigger('processDeferredSlashCommandJobs').timeBased().after(250).create();
       }
     } else {
       clearDeferredSlashTriggers_();
