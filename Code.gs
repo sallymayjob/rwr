@@ -645,7 +645,21 @@ function processQueuedPipeline() {
   }
 }
 
+
+function commandRequiresSchemaWriteGuard_(command, text) {
+  const cmd = String(command || '').toLowerCase();
+  if (cmd === '/submit' || cmd === '/enroll' || cmd === '/enrol' || cmd === '/unenroll' || cmd === '/unenrol' || cmd === '/onboard' || cmd === '/offboard') return true;
+  if (cmd === '/deadletter') {
+    const action = String(text || '').trim().split(/\s+/)[0].toLowerCase();
+    return action === 'requeue';
+  }
+  return false;
+}
+
 function routeCommand(payload) {
+  if (commandRequiresSchemaWriteGuard_(payload.command, payload.text)) {
+    assertSchemaValidForWrite_('command ' + payload.command);
+  }
   switch (payload.command) {
     case '/learn': return agentTutor(payload);
     case '/submit': return agentQuizMaster(payload);
@@ -660,6 +674,7 @@ function routeCommand(payload) {
     case '/gaps': return adminOnly(payload, function() { return agentGaps(payload); });
     case '/backup': return adminOnly(payload, function() { return agentBackup(payload); });
     case '/health': return adminOnly(payload, function() { return agentHealth(payload); });
+    case '/schema': return adminOnly(payload, function() { return agentSchema(payload); });
     case '/deadletter': return adminOnly(payload, function() { return agentDeadletter(payload); });
     case '/cert': return adminOnly(payload, function() { return agentCert(payload); });
     case '/courses': return agentCourses(payload);

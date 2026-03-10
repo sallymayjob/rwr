@@ -29,60 +29,90 @@ function ensureSheetColumnsByName_(sheetName, requiredColumns) {
   return headers;
 }
 
-function ensureCurriculumDatabaseColumns() {
-  ensureSheetColumnsByName_(SHEET_COURSES, ['CourseID','Course Title','Course Description','Entry Module','Module IDs','Module Names','Total Modules','Total Lessons','Audience','Difficulty Range','Delivery Mode','Status']);
-  ensureSheetColumnsByName_(SHEET_MODULES, ['ModuleID','Module Number','Module Name','Module Description','CourseID','Difficulty Tier','Audience','Total Lessons','Week Range','Focus Areas','Delivery Mode','Estimated Duration']);
-  ensureSheetColumnsByName_(SHEET_COURSE_MODULE_MAP, ['CourseID','ModuleID','Sequence','Is Entry Module','Total Lessons in Module']);
-  ensureSheetColumnsByName_(SHEET_LESSONS, ['LessonID','CourseID','ModuleID','Month','Week','Lesson Title','Type','Hook','Core Content','Insight','Takeaway','Objective','Intent','Mission','Verification','Submit Code','Difficulty','Focus Area','Tone','Status','Lesson Order']);
-  ensureSheetColumnsByName_(SHEET_MISSIONS, ['MissionID','LessonID','Activity','Instructions','Submit Code','Activity Type','Response Format']);
-  ensureSheetColumnsByName_(SHEET_METRICS, ['Lesson','Word Count Total','Word Count Core','Word Count Insight','Word Count Takeaway','Brand Compliance Score','PED Flags','Last Reviewed','Reviewer']);
-  ensureSheetColumnsByName_(SHEET_QA, ['Lesson','QA Score','QA Verdict','QA Detail','QA Run Date','Revision Count','SOP-5 Validated','Spot Check','Priority','Status','Golden Example']);
-  ensureSheetColumnsByName_(SHEET_SLACK_DELIVERY, ['LessonID','Slack Thread Text','Submit Code','Mapped Focus','Mapped Action','Mapped Channel Name','Template Source Message','Delivery Status','Slack TS','Slack Channel','Send Order']);
-  ensureSheetColumnsByName_(SHEET_LEARNERS, ['UserID','Name','Email','Enrolled Course','Current Module','Progress (%)','Status','Joined Date','Completed Missions','Completed Lessons','Last LessonID','Last MissionID']);
-  ensureSheetColumnsByName_(SHEET_SUBMISSIONS, ['Timestamp','Learner','Lesson','MissionID','Submit Code','Evidence','Method','Score']);
+function getSchemaDefinitionMap() {
+  return {
+    [SHEET_COURSES]: ['CourseID','Course Title','Course Description','Entry Module','Module IDs','Module Names','Total Modules','Total Lessons','Audience','Difficulty Range','Delivery Mode','Status'],
+    [SHEET_MODULES]: ['ModuleID','Module Number','Module Name','Module Description','CourseID','Difficulty Tier','Audience','Total Lessons','Week Range','Focus Areas','Delivery Mode','Estimated Duration'],
+    [SHEET_COURSE_MODULE_MAP]: ['CourseID','ModuleID','Sequence','Is Entry Module','Total Lessons in Module'],
+    [SHEET_LESSONS]: ['LessonID','CourseID','ModuleID','Month','Week','Lesson Title','Type','Hook','Core Content','Insight','Takeaway','Objective','Intent','Mission','Verification','Submit Code','Difficulty','Focus Area','Tone','Status','Lesson Order'],
+    [SHEET_MISSIONS]: ['MissionID','LessonID','Activity','Instructions','Submit Code','Activity Type','Response Format'],
+    [SHEET_METRICS]: ['Lesson','Word Count Total','Word Count Core','Word Count Insight','Word Count Takeaway','Brand Compliance Score','PED Flags','Last Reviewed','Reviewer'],
+    [SHEET_QA]: ['Lesson','QA Score','QA Verdict','QA Detail','QA Run Date','Revision Count','SOP-5 Validated','Spot Check','Priority','Status','Golden Example'],
+    [SHEET_SLACK_DELIVERY]: ['LessonID','Slack Thread Text','Submit Code','Mapped Focus','Mapped Action','Mapped Channel Name','Template Source Message','Delivery Status','Slack TS','Slack Channel','Send Order'],
+    [SHEET_LEARNERS]: ['UserID','Name','Email','Enrolled Course','Current Module','Progress (%)','Status','Joined Date','Completed Missions','Completed Lessons','Last LessonID','Last MissionID'],
+    [SHEET_SUBMISSIONS]: ['Timestamp','Learner','Lesson','MissionID','Submit Code','Evidence','Method','Score'],
+    [SHEET_QUEUE]: ['job_id','source_event_id','status','attempt_count','max_attempts','next_attempt_at','payload_ref','last_error_class','last_provider_response_code','dead_letter_error_json','last_attempt_at'],
+    'Audit_Log': ['Timestamp','Action','Actor_UserID','Entity_Type','Entity_ID','Outcome','Details_JSON'],
+    'Error_Log': ['Timestamp','Source','Error_Class','Message','Retryable','Resolved_Status'],
+    'Admin_Actions': ['Timestamp','Admin_UserID','Command','Outcome'],
+    'Content_Pipeline': ['PipelineID','LessonID','Stage','Status'],
+    'Prompt_Configs': ['PromptID','Agent_Name','Version','Provider','Is_Active'],
+    'Gem_Roles': ['GemRoleID','Agent_Name','Gem_Key','Model','Status'],
+    'Publish_Queue': ['PublishID','LessonID','Status','Requested_At'],
+    'Generated_Drafts': ['DraftID','LessonID','PromptID','Status','Created_At']
+  };
 }
 
-function validateRequiredSchema() {
-  const required = [
-    { name: SHEET_COURSES, cols: ['CourseID', 'Course Title'] },
-    { name: SHEET_MODULES, cols: ['ModuleID', 'CourseID'] },
-    { name: SHEET_COURSE_MODULE_MAP, cols: ['CourseID', 'ModuleID', 'Sequence'] },
-    { name: SHEET_LESSONS, cols: ['LessonID', 'CourseID', 'ModuleID', 'Status', 'Lesson Order'] },
-    { name: SHEET_MISSIONS, cols: ['MissionID', 'LessonID', 'Submit Code'] },
-    { name: SHEET_QA, cols: ['Lesson', 'QA Verdict', 'Status'] },
-    { name: SHEET_SLACK_DELIVERY, cols: ['LessonID', 'Slack Thread Text', 'Submit Code', 'Slack TS', 'Slack Channel'] },
-    { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
-    { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
-    { name: SHEET_QUEUE, cols: ['job_id', 'source_event_id', 'status', 'attempt_count', 'max_attempts', 'next_attempt_at', 'payload_ref', 'last_error_class', 'last_provider_response_code', 'dead_letter_error_json', 'last_attempt_at'] },
-    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON'] },
-    { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
-    { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
-    { name: 'Content_Pipeline', cols: ['PipelineID', 'LessonID', 'Stage', 'Status'] },
-    { name: 'Prompt_Configs', cols: ['PromptID', 'Agent_Name', 'Version', 'Provider', 'Is_Active'] },
-    { name: 'Gem_Roles', cols: ['GemRoleID', 'Agent_Name', 'Gem_Key', 'Model', 'Status'] },
-    { name: 'Publish_Queue', cols: ['PublishID', 'LessonID', 'Status', 'Requested_At'] },
-    { name: 'Generated_Drafts', cols: ['DraftID', 'LessonID', 'PromptID', 'Status', 'Created_At'] }
-  ];
+function ensureCurriculumDatabaseColumns() {
+  const schemaMap = getSchemaDefinitionMap();
+  Object.keys(schemaMap).forEach(function(sheetName) {
+    if (SS.getSheetByName(sheetName)) ensureSheetColumnsByName_(sheetName, schemaMap[sheetName]);
+  });
+}
 
+function normalizeHeaderName_(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function validateSchema() {
+  const schemaMap = getSchemaDefinitionMap();
   const missingSheets = [];
   const missingColumns = [];
-  required.forEach(function(spec) {
-    const sheet = SS.getSheetByName(spec.name);
+  const mismatchedColumns = [];
+
+  Object.keys(schemaMap).forEach(function(sheetName) {
+    const sheet = SS.getSheetByName(sheetName);
     if (!sheet) {
-      missingSheets.push(spec.name);
+      missingSheets.push(sheetName);
       return;
     }
+
     const headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(function(h) { return String(h || '').trim(); });
-    spec.cols.forEach(function(col) {
-      if (headers.indexOf(col) === -1) missingColumns.push(spec.name + ':' + col);
+    const normalizedIndex = {};
+    headers.forEach(function(header) {
+      const key = normalizeHeaderName_(header);
+      if (key && !normalizedIndex[key]) normalizedIndex[key] = header;
+    });
+
+    schemaMap[sheetName].forEach(function(col) {
+      if (headers.indexOf(col) !== -1) return;
+      missingColumns.push(sheetName + ':' + col);
+      const near = normalizedIndex[normalizeHeaderName_(col)];
+      if (near && near !== col) mismatchedColumns.push(sheetName + ':' + col + ' (found `' + near + '`)');
     });
   });
 
   return {
     ok: missingSheets.length === 0 && missingColumns.length === 0,
     missingSheets: missingSheets,
-    missingColumns: missingColumns
+    missingColumns: missingColumns,
+    mismatchedColumns: mismatchedColumns
   };
+}
+
+function validateRequiredSchema() {
+  return validateSchema();
+}
+
+function assertSchemaValidForWrite_(actionLabel) {
+  const schema = validateSchema();
+  if (schema.ok) return;
+  const scope = actionLabel || 'write operation';
+  const details = [];
+  if (schema.missingSheets.length) details.push('Missing sheets: ' + schema.missingSheets.join(', '));
+  if (schema.mismatchedColumns.length) details.push('Mismatched columns: ' + schema.mismatchedColumns.slice(0, 8).join(', '));
+  if (schema.missingColumns.length) details.push('Missing columns: ' + schema.missingColumns.slice(0, 8).join(', '));
+  throw new Error('Schema validation failed; blocked ' + scope + '. Ask an admin to run /health and repair the sheet headers. ' + details.join(' | '));
 }
 
 function getLearnerRecord(slackUserId) {
@@ -204,6 +234,7 @@ function getLearnerSubmissions(slackUserId) {
 }
 
 function writeSubmission(lessonId, slackUserId, score, method, missionId, submitCode, evidence) {
+  assertSchemaValidForWrite_('submission write');
   const data = getAllRows(SHEET_SUBMISSIONS);
   const row = data.headers.map(function(h) {
     if (h === 'Timestamp') return new Date();
@@ -251,6 +282,7 @@ function getCurrentLessonId(learner) {
 }
 
 function updateLearnerProgress(slackUserId, lessonId, missionId) {
+  assertSchemaValidForWrite_('learner progress update');
   const learner = getLearnerRecord(slackUserId);
   if (!learner) return;
   const submissions = getLearnerSubmissions(slackUserId);

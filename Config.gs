@@ -60,8 +60,12 @@ function adminOnly(payload, fn) {
     appendAdminAction(actor, command, target, 'SUCCESS', '');
     return result;
   } catch (err) {
-    appendAdminAction(actor, command, target, 'ERROR', String(err));
-    appendErrorLog('adminOnly', 'ADMIN_COMMAND_ERROR', String(err), { command: command, actor: actor, target: target }, false);
+    var errMsg = String(err || 'Unknown admin command error');
+    appendAdminAction(actor, command, target, 'ERROR', errMsg);
+    appendErrorLog('adminOnly', 'ADMIN_COMMAND_ERROR', errMsg, { command: command, actor: actor, target: target }, false);
+    if (errMsg.indexOf('Schema validation failed; blocked') !== -1) {
+      return postDM(actor, '⛔ ' + errMsg);
+    }
     return postDM(actor, 'Admin command failed. Please check logs and /health.');
   }
 }
