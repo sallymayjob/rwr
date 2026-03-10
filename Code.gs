@@ -305,6 +305,7 @@ function processQueuedPipeline() {
         }
 
         data.sheet.getRange(sheetRow, idxStatus + 1).setValue('DONE');
+        appendAuditLog('QUEUE_JOB_DONE', (job && job.payload && (job.payload.user_id || job.payload.user)) || '', 'Queue', String(sheetRow), 'DONE', { kind: job.kind || '' });
       } catch (errJob) {
         Logger.log('Queue row error ' + sheetRow + ': ' + errJob);
         const priorRetry = Number(rows[rowIdx][idxRetry] || 0);
@@ -312,6 +313,7 @@ function processQueuedPipeline() {
         data.sheet.getRange(sheetRow, idxRetry + 1).setValue(nextRetry);
         data.sheet.getRange(sheetRow, idxError + 1).setValue(String(errJob));
         data.sheet.getRange(sheetRow, idxStatus + 1).setValue(nextRetry >= maxRetries ? 'DEAD' : 'PENDING');
+        appendErrorLog('processQueuedPipeline', 'QUEUE_JOB_ERROR', String(errJob), { sheet_row: sheetRow, retry_count: nextRetry, payload_json: rows[rowIdx][idxPayload] || '' }, nextRetry < maxRetries);
       }
 
       processed++;

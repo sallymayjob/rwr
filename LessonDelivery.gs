@@ -39,6 +39,7 @@ function ensureTrackingColumns() {
   ensureCurriculumDatabaseColumns();
   ensureLessonTrackingColumns();
   ensureOnboardingTrackingColumns();
+  ensureGovernanceSheetsAndColumns();
   return { ok: true };
 }
 

@@ -20,6 +20,13 @@ Operational sheets:
 - `Queue`
 - `onboarding_workflow_filled_slack_messages` (onboarding only)
 
+Governance/operations sheets (created and validated by setup):
+
+- `Users`, `Cohorts`, `Tracks`, `Enrollments`, `Lesson_Content`
+- `Reminders`, `Approvals`, `Settings`, `Workflow_Rules`
+- `Audit_Log`, `Error_Log`, `Admin_Actions`
+- `Content_Pipeline`, `Prompt_Configs`, `Gem_Roles`, `Publish_Queue`, `Generated_Drafts`
+
 ## Key behavior
 
 - `Slack_Delivery` is the canonical lesson message source.

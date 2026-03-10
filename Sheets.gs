@@ -53,7 +53,15 @@ function validateRequiredSchema() {
     { name: SHEET_SLACK_DELIVERY, cols: ['LessonID', 'Slack Thread Text', 'Submit Code', 'Slack TS', 'Slack Channel'] },
     { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
     { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
-    { name: SHEET_QUEUE, cols: ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'] }
+    { name: SHEET_QUEUE, cols: ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'] },
+    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome'] },
+    { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
+    { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
+    { name: 'Content_Pipeline', cols: ['PipelineID', 'LessonID', 'Stage', 'Status'] },
+    { name: 'Prompt_Configs', cols: ['PromptID', 'Agent_Name', 'Version', 'Provider', 'Is_Active'] },
+    { name: 'Gem_Roles', cols: ['GemRoleID', 'Agent_Name', 'Gem_Key', 'Model', 'Status'] },
+    { name: 'Publish_Queue', cols: ['PublishID', 'LessonID', 'Status', 'Requested_At'] },
+    { name: 'Generated_Drafts', cols: ['DraftID', 'LessonID', 'PromptID', 'Status', 'Created_At'] }
   ];
 
   const missingSheets = [];
