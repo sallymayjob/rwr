@@ -73,3 +73,14 @@ function isLessonTriggerActive() {
 function setLessonTriggerActive(active) {
   PROPS.setProperty('LESSON_TRIGGER_ACTIVE', active ? 'true' : 'false');
 }
+
+function isFeatureEnabled(flagName, defaultValue) {
+  var key = String(flagName || '').trim();
+  if (!key) return !!defaultValue;
+
+  var raw = PROPS.getProperty(key);
+  if (raw == null || raw === '') return !!defaultValue;
+
+  raw = String(raw).toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
