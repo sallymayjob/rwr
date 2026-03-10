@@ -5,7 +5,21 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  const rawBody = e.postData.contents || '';
+  // Parse the incoming JSON request from Slack
+  const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
+  var payload = null;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch (ignore) {
+    payload = null;
+  }
+
+  // Check if Slack is sending a url_verification challenge
+  if (payload && payload.type === 'url_verification' && payload.challenge) {
+    // Return the challenge string directly to Slack
+    return ContentService.createTextOutput(payload.challenge);
+  }
+
   const retryMeta = getSlackRetryMetadata_(e);
 
   // Step 1 - attempt JSON parse (events and block_actions arrive as JSON)
@@ -24,14 +38,7 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // Step 3 - URL verification challenge after signature validation
-  if (body.type === 'url_verification') {
-    return ContentService
-      .createTextOutput(body.challenge)
-      .setMimeType(ContentService.MimeType.TEXT);
-  }
-
-  // Step 3b - coarse request-level idempotency for Slack retries/replays.
+  // Step 3 - coarse request-level idempotency for Slack retries/replays.
   if (isDuplicateSlackRequest_(rawBody, e)) {
     logSlackDedupeAudit_('request', 'HIT', { dedupe_key: 'request_signature', retry: retryMeta });
     return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
