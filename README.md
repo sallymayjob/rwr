@@ -4,14 +4,59 @@ This implementation keeps Google Sheets as the LMS datastore and Apps Script as 
 
 ## Canonical LMS sheets
 
-- `Courses`
-- `Modules`
-- `Course_Module_Map`
-- `Lessons`
-- `Missions`
-- `Lesson_Metrics`
-- `Lesson_QA_Details`
-- `Slack_Delivery`
+## Overview
+
+This codebase implements a supervisor-style routing architecture where all incoming Slack traffic goes through one entrypoint (`doPost` in `Code.gs`) and is deferred into a queue for processing.
+
+Core design goals:
+
+- Fast Slack acknowledgement (`doPost` returns quickly)
+- Signed request validation (Slack HMAC verification)
+- Deterministic sheet operations using batch reads
+- Agent-style handlers for learner/admin workflows
+- Provider-routed AI calls (`callAI`) for Claude/Gemini split
+
+## Repository Structure
+
+- `Config.gs` — constants, sheet names, properties, provider routing, admin helpers
+- `Auth.gs` — Slack signature validation and constant-time compare
+- `Sheets.gs` — batched read/write helpers, progress/submission updates, rollups, queue writes
+- `Slack.gs` — Slack API wrappers and Block Kit builders
+- `Agents.gs` — agent handlers and AI integration (`callClaude`, `callGemini`, `callAI`)
+- `Code.gs` — `doPost`, queue worker (`processQueuedPipeline`), event/command routing
+
+## Supported Commands
+
+### Learner
+
+- `/learn` — Deliver your next lesson.
+- `/submit <lessonId> <evidence>` — Submit lesson verification.
+- `/progress` — Show your current completion progress.
+- `/courses` — List available courses and enrollment status.
+- `/help` — Show command help and usage.
+
+### Admin (guarded by `ADMIN_USER_IDS`)
+
+- `/enrol <userId>` — Enroll a learner.
+- `/unenrol <userId>` — Unenroll a learner.
+- `/cert` — Check certification eligibility.
+- `/onboard <userId>` — Auto-enroll and send orientation + first lesson.
+- `/offboard <userId>` — Archive a learner record.
+- `/report` — Generate a cohort report.
+- `/gaps` — Identify learners behind target pace.
+- `/backup` — Back up LMS sheets.
+- `/mix [topic]` — Generate a suggested learning mix.
+- `/media <lessonId>` — Assess media needs and create a brief.
+- `/startlesson` — Enable learner lesson commands.
+- `/stoplesson` — Pause learner lesson commands.
+
+## Slack Events
+
+- `app_mention`
+- DM messages (`message` with `channel_type=im`)
+- `reaction_added` for `white_check_mark` (`✅`)
+
+## Data Model (Sheets)
 
 Operational sheets:
 

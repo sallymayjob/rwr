@@ -475,7 +475,7 @@ function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
   const learnerCmds = [
     '/learn — Get your next lesson.',
-    '/submit <submit_code> <evidence> — Submit proof of completion.',
+    '/submit <lessonId> <evidence> — Submit proof of completion.',
     '/progress — View your completion progress.',
     '/courses — List available courses and your enrollment.',
     '/help — Show command help.'
@@ -488,7 +488,6 @@ function agentHelp(payload) {
     '/report — Generate a cohort report.',
     '/gaps — Show learners who are behind.',
     '/backup — Create a backup of LMS sheets.',
-    '/health — Validate schema and configuration health.',
     '/mix [topic] — Generate a learning mix.',
     '/media <lessonId> — Review media needs for a lesson.',
     '/cert — Check certification eligibility.',
