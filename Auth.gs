@@ -4,38 +4,53 @@ function validateSlackRequest(e) {
     const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
     const signingSecret = String(PROPS.getProperty('SLACK_SIGNING_SECRET') || '').trim();
 
-    const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
-    const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
+    // 1. Fetch headers natively (Google Apps Script lowercases headers automatically, but checking both is safe)
+    const headers = e.headers || {};
+    const timestamp = headers['X-Slack-Request-Timestamp'] || headers['x-slack-request-timestamp'];
+    const slackSignature = headers['X-Slack-Signature'] || headers['x-slack-signature'];
 
     if (!timestamp || !slackSignature || !signingSecret) {
       Logger.log('validateSlackRequest rejected: missing signature headers or signing secret.');
       return false;
     }
 
-    const tsNum = Number(String(timestamp || '').trim());
+    // 2. Validate timestamp against replay attacks
+    const tsNum = Number(String(timestamp).trim());
     const now = Math.floor(Date.now() / 1000);
     if (!tsNum || Math.abs(now - tsNum) > 300) {
       Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
       return false;
     }
 
+    // 3. Build basestring exactly as Slack requires
     const baseString = 'v0:' + timestamp + ':' + rawBody;
-    const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
+
+    // 4. EXPLICITLY set UTF-8 Encoding (crucial for Slack messages with emojis)
+    const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret, Utilities.Charset.UTF_8);
+    
     const hex = bytes.map(function(b) {
       const v = (b < 0 ? b + 256 : b).toString(16);
       return v.length === 1 ? '0' + v : v;
     }).join('');
+    
     const expected = 'v0=' + hex;
-    const actual = String(slackSignature || '').trim().toLowerCase();
-    const valid = constantTimeEqual(expected, actual);
-    if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
+    const actual = String(slackSignature).trim().toLowerCase();
+
+    // 5. Compare using standard strict equality (Removes dependency on constantTimeEqual)
+    const valid = (expected === actual);
+    
+    if (!valid) {
+      Logger.log('validateSlackRequest rejected: signature mismatch.');
+      Logger.log('Expected: ' + expected);
+      Logger.log('Actual: ' + actual);
+    }
+    
     return valid;
   } catch (err) {
     Logger.log('validateSlackRequest error: ' + err);
     return false;
   }
 }
-
 function isSlackTokenFallbackEnabled_() {
   return false;
 }
