@@ -19,8 +19,10 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // Parse the incoming JSON request from Slack
-  const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
+  // Parse the raw body exactly as received from Slack.
+  const rawBody = e.postData.getDataAsString() || e.postData.contents || '';
+
+  // Parse JSON payload when possible (events + url_verification are JSON).
   var payload = null;
   try {
     payload = JSON.parse(rawBody);
@@ -28,22 +30,16 @@ function doPost(e) {
     payload = null;
   }
 
-  // Check if Slack is sending a url_verification challenge
+  // Check if Slack is sending a url_verification challenge.
   if (payload && payload.type === 'url_verification' && payload.challenge) {
-    // Return the challenge string directly to Slack
+    // Return the challenge string directly to Slack.
     return ContentService.createTextOutput(payload.challenge);
   }
 
   const retryMeta = getSlackRetryMetadata_(e);
 
-  // Step 1 - attempt JSON parse (events and block_actions arrive as JSON)
-  let body = {};
-  try {
-    body = JSON.parse(rawBody);
-  } catch (err) {
-    // Not JSON - likely a slash command (application/x-www-form-urlencoded)
-    // body stays as {} and will be populated from e.parameter below
-  }
+  // Parse a request body object for downstream routing (JSON or form-encoded).
+  let body = payload || parseIncomingBody(rawBody, e.postData.type || '');
 
   // Step 2 - validate Slack signature for all request types.
   if (!validateSlackRequest(e)) {
