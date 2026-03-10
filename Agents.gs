@@ -450,9 +450,97 @@ function agentReport(payload) {
   return postDM(payload.user_id, aiText, buildReportBlocks(learners, submissions, modules));
 }
 
+function getSlackScopeDiagnostics_() {
+  const requiredScopes = [
+    'app_mentions:read',
+    'channels:history',
+    'chat:write',
+    'commands',
+    'im:history',
+    'im:read',
+    'im:write',
+    'reactions:read',
+    'users:read',
+    'users:read.email'
+  ];
+
+  const token = String(PROPS.getProperty('SLACK_BOT_TOKEN') || '').trim();
+  if (!token) {
+    return {
+      ok: false,
+      requiredScopes: requiredScopes,
+      configuredScopes: [],
+      missingScopes: requiredScopes.slice(),
+      detail: 'Missing SLACK_BOT_TOKEN.'
+    };
+  }
+
+  try {
+    const response = UrlFetchApp.fetch('https://slack.com/api/auth.test', {
+      method: 'post',
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      return {
+        ok: false,
+        requiredScopes: requiredScopes,
+        configuredScopes: [],
+        missingScopes: requiredScopes.slice(),
+        detail: 'auth.test HTTP ' + response.getResponseCode()
+      };
+    }
+
+    const data = JSON.parse(response.getContentText() || '{}');
+    if (!data.ok) {
+      return {
+        ok: false,
+        requiredScopes: requiredScopes,
+        configuredScopes: [],
+        missingScopes: requiredScopes.slice(),
+        detail: 'auth.test error: ' + String(data.error || 'unknown_error')
+      };
+    }
+
+    const configuredScopes = String(data && data.response_metadata && data.response_metadata.scopes || '')
+      .split(',')
+      .map(function(s) { return String(s || '').trim(); })
+      .filter(function(s) { return !!s; });
+
+    if (!configuredScopes.length) {
+      return {
+        ok: false,
+        requiredScopes: requiredScopes,
+        configuredScopes: [],
+        missingScopes: requiredScopes.slice(),
+        detail: 'Unable to read token scopes from auth.test response.'
+      };
+    }
+
+    const missingScopes = requiredScopes.filter(function(scope) { return configuredScopes.indexOf(scope) === -1; });
+    return {
+      ok: missingScopes.length === 0,
+      requiredScopes: requiredScopes,
+      configuredScopes: configuredScopes,
+      missingScopes: missingScopes,
+      detail: missingScopes.length ? ('Missing: ' + missingScopes.join(', ')) : 'Required scopes present.'
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      requiredScopes: requiredScopes,
+      configuredScopes: [],
+      missingScopes: requiredScopes.slice(),
+      detail: 'Scope diagnostics error: ' + err
+    };
+  }
+}
+
 function agentHealth(payload) {
   const schema = validateRequiredSchema();
   const checks = [];
+  const scopeDiag = getSlackScopeDiagnostics_();
 
   checks.push('*Schema:* ' + (schema.ok ? 'OK' : 'FAIL'));
   if (!schema.ok) {
@@ -462,14 +550,17 @@ function agentHealth(payload) {
 
   checks.push('*Slack token:* ' + (PROPS.getProperty('SLACK_BOT_TOKEN') ? 'SET' : 'MISSING'));
   checks.push('*Signing secret:* ' + (PROPS.getProperty('SLACK_SIGNING_SECRET') ? 'SET' : 'MISSING'));
+  checks.push('*Required scopes:* ' + (scopeDiag.ok ? 'OK' : 'MISSING/UNKNOWN'));
+  checks.push('*Scopes detail:* ' + scopeDiag.detail);
   checks.push('*Sheets ID:* ' + (PROPS.getProperty('SHEETS_ID') ? 'SET' : 'MISSING'));
   checks.push('*Lesson trigger:* ' + (isLessonTriggerActive() ? 'ACTIVE' : 'PAUSED'));
-  checks.push('*Token fallback auth:* ' + (isSlackTokenFallbackEnabled_() ? 'ENABLED' : 'DISABLED'));
+  checks.push('*Token fallback auth:* DISABLED (enforced)');
   checks.push('*AI disabled:* ' + (String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true' ? 'YES' : 'NO'));
 
   const summary = '*LMS Health Check*\n' + checks.join('\n');
   return postDM(payload.user_id, summary);
 }
+
 
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
@@ -492,7 +583,8 @@ function agentHelp(payload) {
     '/media <lessonId> — Review media needs for a lesson.',
     '/cert — Check certification eligibility.',
     '/startlesson — Enable learner lesson commands.',
-    '/stoplesson — Pause learner lesson commands.'
+    '/stoplesson — Pause learner lesson commands.',
+    '/health — Show signing + scope diagnostics.'
   ];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
   if (admin) text += '\n\n*Admin commands*\n' + adminCmds.join('\n');

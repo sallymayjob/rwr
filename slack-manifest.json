@@ -181,6 +181,7 @@
       "request_url": "https://SCRIPT_WEB_APP_URL",
       "bot_events": [
         "app_mention",
+        "message.channels",
         "message.im",
         "reaction_added"
       ]
