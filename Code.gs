@@ -216,6 +216,7 @@ function processQueuedPipeline() {
 
   const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
   const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
+  const maxRetries = Number(PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
 
   try {
     ensureQueueSheet();
@@ -224,9 +225,11 @@ function processQueuedPipeline() {
     const rows = data.rows;
     const idxPayload = headers.indexOf('Payload_Json');
     const idxStatus = headers.indexOf('Status');
+    const idxRetry = headers.indexOf('Retry_Count');
+    const idxError = headers.indexOf('Last_Error');
 
-    if (idxPayload === -1 || idxStatus === -1) {
-      throw new Error('Queue sheet headers are invalid. Expected Payload_Json and Status.');
+    if (idxPayload === -1 || idxStatus === -1 || idxRetry === -1 || idxError === -1) {
+      throw new Error('Queue sheet headers are invalid. Expected Payload_Json, Status, Retry_Count, Last_Error.');
     }
 
     const candidates = [];
@@ -250,6 +253,7 @@ function processQueuedPipeline() {
 
       // Mark RUNNING per row before work so stale work can be retried on next run.
       data.sheet.getRange(sheetRow, idxStatus + 1).setValue('RUNNING');
+      data.sheet.getRange(sheetRow, idxError + 1).setValue('');
 
       try {
         const payloadJson = rows[rowIdx][idxPayload];
@@ -289,7 +293,11 @@ function processQueuedPipeline() {
         data.sheet.getRange(sheetRow, idxStatus + 1).setValue('DONE');
       } catch (errJob) {
         Logger.log('Queue row error ' + sheetRow + ': ' + errJob);
-        data.sheet.getRange(sheetRow, idxStatus + 1).setValue('ERROR');
+        const priorRetry = Number(rows[rowIdx][idxRetry] || 0);
+        const nextRetry = priorRetry + 1;
+        data.sheet.getRange(sheetRow, idxRetry + 1).setValue(nextRetry);
+        data.sheet.getRange(sheetRow, idxError + 1).setValue(String(errJob));
+        data.sheet.getRange(sheetRow, idxStatus + 1).setValue(nextRetry >= maxRetries ? 'DEAD' : 'PENDING');
       }
 
       processed++;
@@ -327,6 +335,7 @@ function routeCommand(payload) {
     case '/report': return adminOnly(payload, function() { return agentReport(payload); });
     case '/gaps': return adminOnly(payload, function() { return agentGaps(payload); });
     case '/backup': return adminOnly(payload, function() { return agentBackup(payload); });
+    case '/health': return adminOnly(payload, function() { return agentHealth(payload); });
     case '/cert': return adminOnly(payload, function() { return agentCert(payload); });
     case '/courses': return agentCourses(payload);
     case '/help': return agentHelp(payload);
