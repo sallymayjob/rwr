@@ -53,7 +53,7 @@ function validateRequiredSchema() {
     { name: SHEET_SLACK_DELIVERY, cols: ['LessonID', 'Slack Thread Text', 'Submit Code', 'Slack TS', 'Slack Channel'] },
     { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
     { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
-    { name: SHEET_QUEUE, cols: ['job_id', 'source_event_id', 'status', 'attempt_count', 'next_attempt_at', 'payload_ref'] },
+    { name: SHEET_QUEUE, cols: ['job_id', 'source_event_id', 'status', 'attempt_count', 'max_attempts', 'next_attempt_at', 'payload_ref', 'last_error_class', 'last_provider_response_code', 'dead_letter_error_json', 'last_attempt_at'] },
     { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON'] },
     { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
     { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
@@ -314,6 +314,7 @@ function appendToQueue(userId, payloadJson, metadata) {
     const payloadObject = JSON.parse(payloadJson || '{}');
     const kind = String(meta.kind || payloadObject.kind || '').trim();
     const nextAttemptAt = meta.next_attempt_at ? new Date(meta.next_attempt_at) : now;
+    const maxAttempts = Number(meta.max_attempts || PROPS.getProperty('QUEUE_MAX_ATTEMPTS') || PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
     const sourceEventId = String(meta.source_event_id || '').trim();
     const responseUrl = String(meta.response_url || '').trim();
 
@@ -326,8 +327,13 @@ function appendToQueue(userId, payloadJson, metadata) {
       String(meta.payload_ref || '').trim(),
       'PENDING',
       Number(meta.attempt_count || 0),
+      maxAttempts,
       nextAttemptAt,
       now,
+      '',
+      '',
+      '',
+      '',
       '',
       '',
       '',
@@ -413,12 +419,17 @@ function ensureQueueSheet() {
     'payload_ref',
     'status',
     'attempt_count',
+    'max_attempts',
     'next_attempt_at',
     'created_at',
+    'last_attempt_at',
     'started_at',
     'finished_at',
     'processing_latency_ms',
     'last_error',
+    'last_error_class',
+    'last_provider_response_code',
+    'dead_letter_error_json',
     'response_url'
   ];
   if (!sheet) {

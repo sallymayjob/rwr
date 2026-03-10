@@ -561,6 +561,124 @@ function agentHealth(payload) {
   return postDM(payload.user_id, summary);
 }
 
+function buildDeadLetterReport_() {
+  const data = getAllRows(SHEET_QUEUE);
+  const h = data.headers;
+  const idxJobId = h.indexOf('job_id');
+  const idxStatus = h.indexOf('status');
+  const idxKind = h.indexOf('kind');
+  const idxAttempt = h.indexOf('attempt_count');
+  const idxMax = h.indexOf('max_attempts');
+  const idxUser = h.indexOf('user_id');
+  const idxErr = h.indexOf('last_error');
+  const idxErrClass = h.indexOf('last_error_class');
+  const idxCode = h.indexOf('last_provider_response_code');
+  const idxFinished = h.indexOf('finished_at');
+  const idxSnapshot = h.indexOf('dead_letter_error_json');
+
+  const dead = [];
+  for (let i = 0; i < data.rows.length; i++) {
+    if (String(data.rows[i][idxStatus] || '').toUpperCase() !== 'DEAD') continue;
+    dead.push({
+      job_id: String(data.rows[i][idxJobId] || ''),
+      kind: String(data.rows[i][idxKind] || ''),
+      user_id: String(data.rows[i][idxUser] || ''),
+      attempts: Number(data.rows[i][idxAttempt] || 0),
+      max_attempts: Number(data.rows[i][idxMax] || 0),
+      error_class: String(data.rows[i][idxErrClass] || 'UNKNOWN'),
+      provider_response_code: idxCode >= 0 ? String(data.rows[i][idxCode] || '') : '',
+      error: String(data.rows[i][idxErr] || ''),
+      finished_at: String(data.rows[i][idxFinished] || ''),
+      error_snapshot: idxSnapshot >= 0 ? String(data.rows[i][idxSnapshot] || '') : ''
+    });
+  }
+
+  dead.sort(function(a, b) {
+    return new Date(b.finished_at || 0).getTime() - new Date(a.finished_at || 0).getTime();
+  });
+  return dead;
+}
+
+function requeueDeadLetterJob_(jobId) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    const data = getAllRows(SHEET_QUEUE);
+    const h = data.headers;
+    const idxJobId = h.indexOf('job_id');
+    const idxStatus = h.indexOf('status');
+    const idxAttempt = h.indexOf('attempt_count');
+    const idxNext = h.indexOf('next_attempt_at');
+    const idxErr = h.indexOf('last_error');
+    const idxErrClass = h.indexOf('last_error_class');
+    const idxCode = h.indexOf('last_provider_response_code');
+    const idxSnapshot = h.indexOf('dead_letter_error_json');
+
+    for (let i = 0; i < data.rows.length; i++) {
+      if (String(data.rows[i][idxJobId] || '') !== String(jobId || '')) continue;
+      if (String(data.rows[i][idxStatus] || '').toUpperCase() !== 'DEAD') return { ok: false, message: 'Job is not in DEAD state.' };
+      const row = i + 2;
+      data.sheet.getRange(row, idxStatus + 1).setValue('PENDING');
+      data.sheet.getRange(row, idxAttempt + 1).setValue(0);
+      data.sheet.getRange(row, idxNext + 1).setValue(new Date());
+      data.sheet.getRange(row, idxErr + 1).setValue('');
+      if (idxErrClass >= 0) data.sheet.getRange(row, idxErrClass + 1).setValue('');
+      if (idxCode >= 0) data.sheet.getRange(row, idxCode + 1).setValue('');
+      if (idxSnapshot >= 0) data.sheet.getRange(row, idxSnapshot + 1).setValue('');
+      appendAuditLog('QUEUE_DEADLETTER_REQUEUE', '', 'Queue', String(jobId), 'REQUEUED', {});
+      return { ok: true, message: 'Job requeued.' };
+    }
+    return { ok: false, message: 'Job not found.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function agentDeadletter(payload) {
+  const text = String(payload && payload.text || '').trim();
+  const parts = text ? text.split(/\s+/) : [];
+  const action = (parts[0] || 'report').toLowerCase();
+
+  if (action === 'requeue') {
+    const jobId = parts[1] || '';
+    if (!jobId) return postDM(payload.user_id, 'Usage: /deadletter requeue <job_id>');
+    const res = requeueDeadLetterJob_(jobId);
+    if (res.ok) scheduleQueuedPipeline_();
+    return postDM(payload.user_id, (res.ok ? '✅ ' : '❌ ') + res.message);
+  }
+
+  if (action === 'inspect') {
+    const jobId = parts[1] || '';
+    if (!jobId) return postDM(payload.user_id, 'Usage: /deadletter inspect <job_id>');
+    const dead = buildDeadLetterReport_();
+    const match = dead.filter(function(d) { return d.job_id === jobId; })[0];
+    if (!match) return postDM(payload.user_id, 'Job not found in dead-letter queue: `' + jobId + '`.');
+    return postDM(payload.user_id,
+      '*Dead-letter inspect*\n' +
+      'job_id: `' + match.job_id + '`\n' +
+      'kind: ' + (match.kind || '-') + '\n' +
+      'user: <@' + (match.user_id || '') + '>\n' +
+      'attempts: ' + match.attempts + '/' + (match.max_attempts || '?') + '\n' +
+      'error_class: ' + match.error_class + '\n' +
+      'provider_response_code: ' + (match.provider_response_code || '-') + '\n' +
+      'error: ' + (match.error || '-') + '\n' +
+      'snapshot: ```' + (match.error_snapshot || '{}') + '```');
+  }
+
+  const dead = buildDeadLetterReport_();
+  if (!dead.length) return postDM(payload.user_id, '*Dead-letter queue:* 0 jobs.');
+
+  const lines = dead.slice(0, 20).map(function(d) {
+    const code = d.provider_response_code ? (' code=' + d.provider_response_code) : '';
+    return '• `' + d.job_id + '` kind=' + (d.kind || '?') + ' attempts=' + d.attempts + '/' + (d.max_attempts || '?') + ' class=' + d.error_class + code;
+  });
+
+  return postDM(payload.user_id,
+    '*Dead-letter queue:* ' + dead.length + ' jobs\n' +
+    lines.join('\n') +
+    '\n\nUse `/deadletter inspect <job_id>` to view error snapshot or `/deadletter requeue <job_id>` to retry.');
+}
+
 
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
@@ -584,7 +702,8 @@ function agentHelp(payload) {
     '/cert — Check certification eligibility.',
     '/startlesson — Enable learner lesson commands.',
     '/stoplesson — Pause learner lesson commands.',
-    '/health — Show signing + scope diagnostics.'
+    '/health — Show signing + scope diagnostics.',
+    '/deadletter [report|inspect <job_id>|requeue <job_id>] — Review/requeue dead-letter jobs.'
   ];
   let text = '*Available commands*\n' + learnerCmds.join('\n');
   if (admin) text += '\n\n*Admin commands*\n' + adminCmds.join('\n');

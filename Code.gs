@@ -340,6 +340,8 @@ function claimQueueJobs_(batchLimit) {
     const idxNextAttempt = headers.indexOf('next_attempt_at');
     const idxStarted = headers.indexOf('started_at');
     const idxPayload = headers.indexOf('payload_json');
+    const idxAttempt = headers.indexOf('attempt_count');
+    const idxUser = headers.indexOf('user_id');
     if (idxJobId === -1 || idxStatus === -1 || idxNextAttempt === -1 || idxStarted === -1 || idxPayload === -1) {
       throw new Error('Queue sheet headers invalid for claimQueueJobs_.');
     }
@@ -357,7 +359,9 @@ function claimQueueJobs_(batchLimit) {
       claimed.push({
         row: sheetRow,
         job_id: String(data.rows[i][idxJobId] || ''),
-        payload_json: String(data.rows[i][idxPayload] || '{}')
+        payload_json: String(data.rows[i][idxPayload] || '{}'),
+        attempt_count: Number(data.rows[i][idxAttempt] || 0),
+        user_id: idxUser >= 0 ? String(data.rows[i][idxUser] || '') : ''
       });
     }
 
@@ -400,7 +404,72 @@ function markQueueJobCompleted_(jobId, latencyMs, resultMeta) {
   }
 }
 
-function markQueueJobFailed_(jobId, errText, maxRetries, startedAtMs) {
+function parseProviderResponseCode_(errText) {
+  var msg = String(errText || '');
+  var m = msg.match(/(?:status=|HTTP\s+|code=)(\d{3})/i);
+  return m ? Number(m[1]) : '';
+}
+
+function classifyQueueError_(errText) {
+  var message = String(errText || '').toLowerCase();
+  var responseCode = parseProviderResponseCode_(errText);
+
+  var isSchemaViolation = (
+    message.indexOf('schema') !== -1 ||
+    message.indexOf('missing sheet') !== -1 ||
+    message.indexOf('missing column') !== -1 ||
+    message.indexOf('sheet not found') !== -1 ||
+    message.indexOf('invalid payload') !== -1 ||
+    message.indexOf('json') !== -1 && message.indexOf('parse') !== -1
+  );
+
+  if (isSchemaViolation) {
+    return { error_class: 'PERMANENT_SCHEMA', retryable: false, response_code: responseCode };
+  }
+
+  if (responseCode === 429 || (responseCode >= 500 && responseCode < 600)) {
+    return { error_class: 'TRANSIENT_PROVIDER', retryable: true, response_code: responseCode };
+  }
+
+  if (message.indexOf('timeout') !== -1 || message.indexOf('timed out') !== -1 || message.indexOf('rate limit') !== -1) {
+    return { error_class: 'TRANSIENT_NETWORK', retryable: true, response_code: responseCode };
+  }
+
+  if (responseCode >= 400 && responseCode < 500) {
+    return { error_class: 'PERMANENT_CLIENT', retryable: false, response_code: responseCode };
+  }
+
+  return { error_class: 'UNKNOWN', retryable: true, response_code: responseCode };
+}
+
+function computeRetryBackoffMs_(attemptCount) {
+  var baseMs = Number(PROPS.getProperty('QUEUE_BACKOFF_BASE_MS') || 1000);
+  var maxMs = Number(PROPS.getProperty('QUEUE_BACKOFF_MAX_MS') || (10 * 60 * 1000));
+  var jitterMs = Number(PROPS.getProperty('QUEUE_BACKOFF_JITTER_MS') || 750);
+  var expMs = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, Number(attemptCount || 0) - 1)));
+  var jitter = Math.floor(Math.random() * Math.max(1, jitterMs));
+  return expMs + jitter;
+}
+
+function logQueueAttempt_(job, attemptNo, errText, classification) {
+  var payload = {};
+  try {
+    payload = JSON.parse(String(job && job.payload_json || '{}'));
+  } catch (ignore) {
+    payload = {};
+  }
+
+  appendAuditLog('QUEUE_JOB_ATTEMPT', String(job && job.user_id || ''), 'Queue', String(job && job.job_id || ''), classification.retryable ? 'RETRY' : 'FAILED', {
+    attempt: Number(attemptNo || 0),
+    timestamp: new Date().toISOString(),
+    kind: String(payload.kind || ''),
+    error_class: String(classification.error_class || 'UNKNOWN'),
+    provider_response_code: classification.response_code === '' ? '' : Number(classification.response_code),
+    error: String(errText || '')
+  });
+}
+
+function markQueueJobFailed_(job, errText, maxAttempts, startedAtMs, classification) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(2000)) return;
   try {
@@ -409,27 +478,54 @@ function markQueueJobFailed_(jobId, errText, maxRetries, startedAtMs) {
     const idxJobId = h.indexOf('job_id');
     const idxStatus = h.indexOf('status');
     const idxAttempt = h.indexOf('attempt_count');
+    const idxMaxAttempts = h.indexOf('max_attempts');
     const idxError = h.indexOf('last_error');
+    const idxErrorClass = h.indexOf('last_error_class');
+    const idxResponseCode = h.indexOf('last_provider_response_code');
     const idxNext = h.indexOf('next_attempt_at');
     const idxFinished = h.indexOf('finished_at');
     const idxLatency = h.indexOf('processing_latency_ms');
+    const idxSnapshot = h.indexOf('dead_letter_error_json');
+    const idxLastAttempt = h.indexOf('last_attempt_at');
 
     for (let i = 0; i < data.rows.length; i++) {
-      if (String(data.rows[i][idxJobId] || '') !== String(jobId)) continue;
+      if (String(data.rows[i][idxJobId] || '') !== String(job.job_id)) continue;
       const row = i + 2;
       const nextAttempt = Number(data.rows[i][idxAttempt] || 0) + 1;
-      const isDead = nextAttempt >= maxRetries;
-      const backoffMs = Math.min(10 * 60 * 1000, Math.pow(2, nextAttempt) * 1000);
+      const rowMaxAttempts = Number(data.rows[i][idxMaxAttempts] || maxAttempts || 3) || 3;
+      const retryable = classification && classification.retryable !== false;
+      const isDead = !retryable || nextAttempt >= rowMaxAttempts;
+      const backoffMs = computeRetryBackoffMs_(nextAttempt);
+
       data.sheet.getRange(row, idxAttempt + 1).setValue(nextAttempt);
+      if (idxLastAttempt >= 0) data.sheet.getRange(row, idxLastAttempt + 1).setValue(new Date());
       data.sheet.getRange(row, idxError + 1).setValue(String(errText || 'Unknown queue job error'));
+      if (idxErrorClass >= 0) data.sheet.getRange(row, idxErrorClass + 1).setValue(String(classification && classification.error_class || 'UNKNOWN'));
+      if (idxResponseCode >= 0) data.sheet.getRange(row, idxResponseCode + 1).setValue(classification && classification.response_code !== '' ? Number(classification.response_code) : '');
       data.sheet.getRange(row, idxStatus + 1).setValue(isDead ? 'DEAD' : 'PENDING');
       data.sheet.getRange(row, idxNext + 1).setValue(new Date(Date.now() + backoffMs));
       data.sheet.getRange(row, idxFinished + 1).setValue(new Date());
       data.sheet.getRange(row, idxLatency + 1).setValue(Math.max(0, Date.now() - Number(startedAtMs || Date.now())));
-      appendErrorLog('processQueuedPipeline', 'QUEUE_JOB_ERROR', String(errText), {
-        job_id: String(jobId),
-        retry_count: nextAttempt,
-        next_attempt_at: new Date(Date.now() + backoffMs)
+      if (isDead && idxSnapshot >= 0) {
+        data.sheet.getRange(row, idxSnapshot + 1).setValue(JSON.stringify({
+          failed_at: new Date().toISOString(),
+          job_id: String(job.job_id || ''),
+          attempts: nextAttempt,
+          max_attempts: rowMaxAttempts,
+          error_class: String(classification && classification.error_class || 'UNKNOWN'),
+          provider_response_code: classification && classification.response_code !== '' ? Number(classification.response_code) : null,
+          error: String(errText || ''),
+          payload_json: String(job.payload_json || '{}')
+        }));
+      }
+
+      appendErrorLog('processQueuedPipeline', String(classification && classification.error_class || 'QUEUE_JOB_ERROR'), String(errText), {
+        job_id: String(job.job_id || ''),
+        attempt: nextAttempt,
+        max_attempts: rowMaxAttempts,
+        provider_response_code: classification && classification.response_code !== '' ? Number(classification.response_code) : '',
+        next_attempt_at: new Date(Date.now() + backoffMs),
+        status: isDead ? 'DEAD' : 'PENDING'
       }, !isDead);
       break;
     }
@@ -456,7 +552,7 @@ function processQueuedPipeline() {
   const start = Date.now();
   const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
   const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
-  const maxRetries = Number(PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
+  const maxAttempts = Number(PROPS.getProperty('QUEUE_MAX_ATTEMPTS') || PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
 
   try {
     const claimed = claimQueueJobs_(batchLimit);
@@ -470,8 +566,16 @@ function processQueuedPipeline() {
 
       const job = claimed[j];
       const jobStart = Date.now();
+      const attemptNo = Number(job.attempt_count || 0) + 1;
       try {
         const envelope = JSON.parse(job.payload_json || '{}');
+        appendAuditLog('QUEUE_JOB_ATTEMPT', String(job.user_id || ''), 'Queue', String(job.job_id || ''), 'START', {
+          attempt: attemptNo,
+          timestamp: new Date().toISOString(),
+          kind: String(envelope.kind || ''),
+          error_class: 'NONE',
+          provider_response_code: ''
+        });
 
         if (envelope.kind === 'command') {
           if (!shouldSkipDuplicateCommand_(envelope.payload)) routeCommand(envelope.payload);
@@ -498,10 +602,20 @@ function processQueuedPipeline() {
 
         const latencyMs = Date.now() - jobStart;
         markQueueJobCompleted_(job.job_id, latencyMs, { kind: envelope.kind || '' });
+        appendAuditLog('QUEUE_JOB_ATTEMPT', String(job.user_id || ''), 'Queue', String(job.job_id || ''), 'SUCCESS', {
+          attempt: attemptNo,
+          timestamp: new Date().toISOString(),
+          kind: String(envelope.kind || ''),
+          error_class: 'NONE',
+          provider_response_code: ''
+        });
         if (envelope.kind === 'command') notifyQueueJobResult_(job, true, '');
       } catch (errJob) {
         Logger.log('Queue job error ' + job.job_id + ': ' + errJob);
-        markQueueJobFailed_(job.job_id, String(errJob), maxRetries, jobStart);
+        const errText = String(errJob);
+        const classification = classifyQueueError_(errText);
+        logQueueAttempt_(job, attemptNo, errText, classification);
+        markQueueJobFailed_(job, errText, maxAttempts, jobStart, classification);
         notifyQueueJobResult_(job, false, errJob);
       }
       processed++;
@@ -546,6 +660,7 @@ function routeCommand(payload) {
     case '/gaps': return adminOnly(payload, function() { return agentGaps(payload); });
     case '/backup': return adminOnly(payload, function() { return agentBackup(payload); });
     case '/health': return adminOnly(payload, function() { return agentHealth(payload); });
+    case '/deadletter': return adminOnly(payload, function() { return agentDeadletter(payload); });
     case '/cert': return adminOnly(payload, function() { return agentCert(payload); });
     case '/courses': return agentCourses(payload);
     case '/help': return agentHelp(payload);
