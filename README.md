@@ -89,6 +89,10 @@ Required:
 - `SLACK_BOT_TOKEN`
 - `SLACK_SIGNING_SECRET`
 
+Optional emergency fallback (deprecated):
+- `SLACK_AUTH_TOKEN_FALLBACK=true`
+- `SLACK_VERIFICATION_TOKEN`
+
 Recommended:
 - `ADMIN_USER_IDS`
 - `SLACK_AUTH_TOKEN_FALLBACK=false`

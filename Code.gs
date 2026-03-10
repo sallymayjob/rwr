@@ -1,3 +1,19 @@
+function doGet(e) {
+  try {
+    return ContentService
+      .createTextOutput(JSON.stringify({
+        ok: true,
+        message: 'Slack webhook endpoint is live. Use HTTP POST from Slack (doPost).',
+        hint: 'If you just deployed changes, publish a New version in Deploy > Manage deployments.'
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err || 'Unknown doGet error') }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 function doPost(e) {
   // Parse the incoming JSON request from Slack
   var payload = null;
