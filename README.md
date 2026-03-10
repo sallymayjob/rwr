@@ -49,6 +49,7 @@ Core design goals:
 - `/media <lessonId>` — Assess media needs and create a brief.
 - `/startlesson` — Enable learner lesson commands.
 - `/stoplesson` — Pause learner lesson commands.
+- `/deadletter [report|inspect <job_id>|requeue <job_id>]` — Review or requeue dead-letter queue jobs.
 
 ## Slack Events
 
@@ -95,7 +96,7 @@ Governance/operations sheets (created and validated by setup):
 - `/learn` — send next eligible lesson
 - `/submit <submit_code> <evidence>` — mission submission
 - `/progress` — learner progress summary
-- admin: `/onboard`, `/offboard`, `/enroll`, `/unenroll`, `/report`, `/gaps`, `/backup`, `/health`, `/startlesson`, `/stoplesson`
+- admin: `/onboard`, `/offboard`, `/enroll`, `/unenroll`, `/report`, `/gaps`, `/backup`, `/health`, `/deadletter`, `/startlesson`, `/stoplesson`
 
 ## Setup
 
@@ -106,7 +107,15 @@ Set Script Properties:
 - `SLACK_SIGNING_SECRET`
 - `ADMIN_USER_IDS`
 - required: `SLACK_AUTH_TOKEN_FALLBACK=false` (verification token fallback is disabled; signing-secret HMAC is mandatory)
-- optional: `DEFAULT_LESSON_CHANNEL`, `DEFAULT_ONBOARDING_CHANNEL`, `ONBOARDING_SHEET_NAME`, `BATCH_LIMIT`, `DRY_RUN`, `QUEUE_MAX_RETRIES`, `QUEUE_RETENTION_DAYS`, `QUEUE_MAX_ROWS`, `QUEUE_PRUNE_INTERVAL_MS`, `AI_DISABLED`
+- optional: `DEFAULT_LESSON_CHANNEL`, `DEFAULT_ONBOARDING_CHANNEL`, `ONBOARDING_SHEET_NAME`, `BATCH_LIMIT`, `DRY_RUN`, `QUEUE_MAX_ATTEMPTS` (fallback `QUEUE_MAX_RETRIES`), `QUEUE_BACKOFF_BASE_MS`, `QUEUE_BACKOFF_MAX_MS`, `QUEUE_BACKOFF_JITTER_MS`, `QUEUE_RETENTION_DAYS`, `QUEUE_MAX_ROWS`, `QUEUE_PRUNE_INTERVAL_MS`, `AI_DISABLED`
+
+## Queue retry + dead-letter behavior
+
+- Transient errors (retryable): provider HTTP `429` and `5xx`, plus timeout/rate-limit network failures.
+- Permanent errors (non-retryable): schema/data violations (missing sheets/columns, invalid payload/schema, JSON parse issues) and provider `4xx` client failures.
+- Retries use exponential backoff with jitter and stop at `max_attempts`.
+- On `max_attempts` exceeded (or permanent error), the job status is set to `DEAD` and a JSON snapshot of the failure is stored in `dead_letter_error_json`.
+- Each failed attempt is audit-logged with timestamp, error class, and provider response code.
 - AI: `GEMINI_API_KEY`, optional `GEMINI_MODEL` (default `gemini-1.5-flash`), optional per-agent Gem instruction properties like `GEMINI_GEM_PROGRESS_ASSISTANT`
 
 Then run `menuEnsureTrackingColumns()` once to align headers.
