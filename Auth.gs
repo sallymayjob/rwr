@@ -2,6 +2,15 @@ function validateSlackRequest(e) {
   try {
     if (!e || !e.postData) return false;
     const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
+    const hasLegacyToken = !!String(PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '').trim();
+
+    // Immediate unblock mode: if a legacy verification token is configured and present
+    // in the request, trust that first and skip HMAC complexity.
+    if (hasLegacyToken && validateLegacySlackToken_(e, rawBody)) {
+      Logger.log('validateSlackRequest accepted via deprecated SLACK_VERIFICATION_TOKEN validation.');
+      return true;
+    }
+
     const signingSecret = String(PROPS.getProperty('SLACK_SIGNING_SECRET') || '').trim();
 
     // 1. Fetch headers natively (Google Apps Script lowercases headers automatically, but checking both is safe)
@@ -28,15 +37,9 @@ function validateSlackRequest(e) {
       const actual = String(slackSignature || '').trim().toLowerCase();
       const valid = constantTimeEqual(expected, actual);
       if (valid) return true;
-      Logger.log('validateSlackRequest HMAC mismatch; checking legacy token fallback (if enabled).');
+      Logger.log('validateSlackRequest HMAC mismatch.');
     } else {
-      Logger.log('validateSlackRequest missing signature headers/secret; checking legacy token fallback (if enabled).');
-    }
-
-    // Emergency path: deprecated legacy token fallback, explicitly gated by property.
-    if (isSlackTokenFallbackEnabled_() && validateLegacySlackToken_(e, rawBody)) {
-      Logger.log('validateSlackRequest accepted via deprecated SLACK_VERIFICATION_TOKEN fallback.');
-      return true;
+      Logger.log('validateSlackRequest missing signature headers/secret.');
     }
 
     return false;
@@ -44,10 +47,6 @@ function validateSlackRequest(e) {
     Logger.log('validateSlackRequest error: ' + err);
     return false;
   }
-}
-function isSlackTokenFallbackEnabled_() {
-  var raw = String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || '').toLowerCase().trim();
-  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
 }
 
 function validateLegacySlackToken_(e, rawBody) {

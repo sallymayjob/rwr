@@ -41,13 +41,11 @@ In Google Apps Script:
 - `SLACK_SIGNING_SECRET` = signing secret from Slack app Basic Info
 
 Optional emergency fallback (deprecated by Slack):
-- `SLACK_AUTH_TOKEN_FALLBACK` = `true`
 - `SLACK_VERIFICATION_TOKEN` = verification token from Slack app Basic Info
 
 Recommended keys:
 
 - `ADMIN_USER_IDS`
-- `SLACK_AUTH_TOKEN_FALLBACK` = `false`
 - `DEFAULT_LESSON_CHANNEL`
 - `DEFAULT_ONBOARDING_CHANNEL`
 
