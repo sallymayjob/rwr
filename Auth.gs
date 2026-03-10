@@ -211,6 +211,8 @@ function isDuplicateSlackEventId_(eventId) {
 
 function getHeaderValue(e, keys) {
   const variants = [];
+  const safeEvent = e || {};
+  const keyList = Array.isArray(keys) ? keys : (keys ? [keys] : []);
 
   function addVariant(value) {
     const key = String(value || '').trim();
@@ -240,22 +242,22 @@ function getHeaderValue(e, keys) {
     return value || '';
   }
 
-  keys.forEach(addKeyVariants);
+  keyList.forEach(addKeyVariants);
 
   // Web Apps can expose headers under e.headers with provider-specific naming/casing.
-  if (e.headers) {
+  if (safeEvent.headers) {
     for (let i = 0; i < variants.length; i++) {
       const key = variants[i];
-      if (Object.prototype.hasOwnProperty.call(e.headers, key)) {
-        const value = coerceHeaderValue(e.headers[key]);
+      if (Object.prototype.hasOwnProperty.call(safeEvent.headers, key)) {
+        const value = coerceHeaderValue(safeEvent.headers[key]);
         if (value) return String(value).trim();
       }
     }
 
     // Final fallback: case-insensitive lookup across all generated variants.
     const normalized = {};
-    Object.keys(e.headers).forEach(function(k) {
-      normalized[String(k || '').toLowerCase()] = e.headers[k];
+    Object.keys(safeEvent.headers).forEach(function(k) {
+      normalized[String(k || '').toLowerCase()] = safeEvent.headers[k];
     });
 
     for (let i = 0; i < variants.length; i++) {
@@ -266,8 +268,8 @@ function getHeaderValue(e, keys) {
 
   for (let i = 0; i < variants.length; i++) {
     const key = variants[i];
-    if (e.parameter && e.parameter[key]) return String(e.parameter[key]).trim();
-    if (e.parameters && e.parameters[key] && e.parameters[key][0]) return String(e.parameters[key][0]).trim();
+    if (safeEvent.parameter && safeEvent.parameter[key]) return String(safeEvent.parameter[key]).trim();
+    if (safeEvent.parameters && safeEvent.parameters[key] && safeEvent.parameters[key][0]) return String(safeEvent.parameters[key][0]).trim();
   }
 
   return '';
