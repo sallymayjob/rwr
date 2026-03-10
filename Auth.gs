@@ -120,14 +120,65 @@ function extractSlackVerificationToken_(rawBody, e) {
 
 function getHeaderValue(e, keys) {
   const variants = [];
-  keys.forEach(function(k) {
-    variants.push(k, k.toLowerCase(), k.toUpperCase(), 'HTTP_' + k.toUpperCase().replace(/-/g, '_'));
-  });
+
+  function addVariant(value) {
+    const key = String(value || '').trim();
+    if (!key) return;
+    if (variants.indexOf(key) === -1) variants.push(key);
+  }
+
+  function addKeyVariants(baseKey) {
+    const original = String(baseKey || '').trim();
+    if (!original) return;
+
+    const hyphen = original.replace(/_/g, '-');
+    const underscore = original.replace(/-/g, '_');
+
+    [original, hyphen, underscore].forEach(function(k) {
+      addVariant(k);
+      addVariant(k.toLowerCase());
+      addVariant(k.toUpperCase());
+    });
+
+    addVariant('HTTP_' + hyphen.toUpperCase().replace(/-/g, '_'));
+    addVariant('http_' + hyphen.toLowerCase().replace(/-/g, '_'));
+  }
+
+  function coerceHeaderValue(value) {
+    if (Array.isArray(value)) return value[0] || '';
+    return value || '';
+  }
+
+  keys.forEach(addKeyVariants);
+
+  // Web Apps can expose headers under e.headers with provider-specific naming/casing.
+  if (e.headers) {
+    for (let i = 0; i < variants.length; i++) {
+      const key = variants[i];
+      if (Object.prototype.hasOwnProperty.call(e.headers, key)) {
+        const value = coerceHeaderValue(e.headers[key]);
+        if (value) return String(value).trim();
+      }
+    }
+
+    // Final fallback: case-insensitive lookup across all generated variants.
+    const normalized = {};
+    Object.keys(e.headers).forEach(function(k) {
+      normalized[String(k || '').toLowerCase()] = e.headers[k];
+    });
+
+    for (let i = 0; i < variants.length; i++) {
+      const value = coerceHeaderValue(normalized[String(variants[i]).toLowerCase()]);
+      if (value) return String(value).trim();
+    }
+  }
+
   for (let i = 0; i < variants.length; i++) {
     const key = variants[i];
-    if (e.parameter && e.parameter[key]) return e.parameter[key];
-    if (e.parameters && e.parameters[key] && e.parameters[key][0]) return e.parameters[key][0];
+    if (e.parameter && e.parameter[key]) return String(e.parameter[key]).trim();
+    if (e.parameters && e.parameters[key] && e.parameters[key][0]) return String(e.parameters[key][0]).trim();
   }
+
   return '';
 }
 
