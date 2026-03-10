@@ -269,7 +269,13 @@ function postNextLessonForUser(userId) {
 }
 
 // Onboarding isolated: only /onboard and onboarding interactivity use these handlers.
-function generateStepIdsIfMissing() { return true; }
+function generateStepIdsIfMissing() {
+  if (!isFeatureEnabled('FEATURE_ONBOARDING_STEP_ID_AUTOGEN', false)) {
+    Logger.log('generateStepIdsIfMissing skipped: FEATURE_ONBOARDING_STEP_ID_AUTOGEN disabled.');
+    return false;
+  }
+  return true;
+}
 function getOnboardingRows() { const s = getOnboardingSheet(); if (!s) return []; const m = ensureOnboardingTrackingColumns(); return buildRows_(s, m.headers); }
 function getNextOnboardingRow() { const rows = getOnboardingRows(); for (let i=0;i<rows.length;i++) if (String(rows[i]['Posted Status']||'').toLowerCase() !== 'posted') return rows[i]; return null; }
 function buildOnboardingMessage(row) { return String(row['Slack Message'] || ''); }
@@ -297,6 +303,7 @@ function buildOnboardingModal(row) {
   return {
     type:'modal',
     private_metadata: privateMeta,
+    callback_id:'onboarding_modal',
     title:{type:'plain_text',text:'Onboarding'},
     close:{type:'plain_text',text:'Close'},
     submit:{type:'plain_text',text:'Complete'},
@@ -352,16 +359,31 @@ function handleOnboardingButtonClick(payload) {
   if (!row) return { ok: false, error: 'onboarding_row_not_found' };
 
   var actionId = String(action.action_id || '').toLowerCase();
-  if (actionId.indexOf('modal') !== -1 && payload.trigger_id) {
+  var actor = (payload.user && payload.user.id) || '';
+  var completeActionIds = {
+    onboarding_complete: true,
+    onboarding_done: true,
+    onboarding_mark_done: true
+  };
+
+  if (actionId === 'onboarding_open_modal' || actionId === 'onboarding_modal_open') {
+    if (!payload.trigger_id) return { ok: false, error: 'missing_trigger_id' };
     return openOnboardingModal(payload.trigger_id, row);
   }
 
-  if (actionId.indexOf('complete') !== -1 || actionId.indexOf('done') !== -1 || !actionId) {
-    updateOnboardingRowFromModal(row.__rowIndex, { source: 'button', action_id: actionId, user_id: (payload.user && payload.user.id) || '' });
+  if (completeActionIds[actionId]) {
+    updateOnboardingRowFromModal(row.__rowIndex, { source: 'button', action_id: actionId, user_id: actor });
     return { ok: true, completed: true };
   }
 
-  return { ok: true, skipped: true };
+  Logger.log('Unknown onboarding action_id=' + actionId + ' user=' + actor + ' step_id=' + stepId);
+  return { ok: false, error: 'unknown_onboarding_action_id', action_id: actionId };
+}
+
+function buildSlackViewValidationError_(blockId, message) {
+  var err = {};
+  err[String(blockId || 'completion_note')] = String(message || 'Please review this field.');
+  return { ok: false, response_action: 'errors', errors: err };
 }
 
 function handleOnboardingModalSubmit(payload) {
@@ -383,34 +405,100 @@ function handleOnboardingModalSubmit(payload) {
     var row = resolveOnboardingRowByIdentifier_(md.step_id, '', '');
     rowIndex = row ? row.__rowIndex : 0;
   }
-  if (!rowIndex) return { ok: false, error: 'onboarding_modal_row_not_found' };
+  if (!rowIndex) return buildSlackViewValidationError_('completion_note', 'This onboarding step could not be found. Please close and reopen the modal from the onboarding message.');
 
   updateOnboardingRowFromModal(rowIndex, out);
   return { ok: true, completed: true };
 }
+
+function isOnboardingShortcutEnabled_() {
+  return isFeatureEnabled('FEATURE_ONBOARDING_SHORTCUTS', false);
+}
+
+function parseOnboardingShortcutMetadata_(payload) {
+  var raw = ((payload || {}).callback_id || '').trim();
+  if (!raw) return { action: '', step_id: '' };
+
+  var match = raw.match(/^onboarding_shortcut(?::([^:]+))?(?::(.+))?$/);
+  if (!match) return { action: '', step_id: '' };
+  return {
+    action: String(match[1] || 'open_modal').trim().toLowerCase(),
+    step_id: String(match[2] || '').trim()
+  };
+}
+
+function handleOnboardingShortcut(payload) {
+  if (!isOnboardingShortcutEnabled_()) {
+    Logger.log('Slack shortcut ignored because FEATURE_ONBOARDING_SHORTCUTS is disabled. callback_id=' + String(payload && payload.callback_id || ''));
+    return { ok: true, skipped: true, reason: 'feature_flag_disabled' };
+  }
+
+  var triggerId = String(payload && payload.trigger_id || '').trim();
+  if (!triggerId) return { ok: false, error: 'missing_trigger_id' };
+
+  var md = parseOnboardingShortcutMetadata_(payload);
+  var stepId = md.step_id;
+  var row = stepId ? resolveOnboardingRowByIdentifier_(stepId, '', '') : getNextOnboardingRow();
+  if (!row) {
+    var actor = (payload && payload.user && payload.user.id) || '';
+    if (actor) postDM(actor, 'No onboarding step is available to open right now.');
+    return { ok: true, skipped: true, reason: 'onboarding_row_not_found' };
+  }
+
+  return openOnboardingModal(triggerId, row);
+}
+
+function routeSlackBlockAction_(payload) {
+  var action = payload && payload.actions && payload.actions[0];
+  if (!action) return { ok: true, skipped: true };
+
+  var actionId = String(action.action_id || '').trim();
+  if (!actionId) {
+    Logger.log('Slack block_actions payload missing action_id: ' + JSON.stringify({ user: (payload.user && payload.user.id) || '', container: payload.container || {} }));
+    return { ok: false, error: 'missing_action_id' };
+  }
+
+  if (actionId === 'lesson_complete') {
+    var userId = (payload.user && payload.user.id) || '';
+    appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: payload }));
+    scheduleQueuedPipeline_();
+    return { ok: true, queued: true };
+  }
+
+  if (actionId.indexOf('onboarding_') === 0) {
+    return handleOnboardingButtonClick(payload);
+  }
+
+  Logger.log('Unknown Slack block action_id=' + actionId + ' user=' + ((payload.user && payload.user.id) || '') + ' callback_id=' + ((payload.view && payload.view.callback_id) || ''));
+  return { ok: false, error: 'unknown_action_id', action_id: actionId };
+}
+
+function routeSlackViewSubmission_(payload) {
+  var view = payload && payload.view || {};
+  var callbackId = String(view.callback_id || '').trim();
+  if (callbackId === 'onboarding_modal') return handleOnboardingModalSubmit(payload);
+
+  Logger.log('Unknown Slack view_submission callback_id=' + callbackId + ' user=' + ((payload.user && payload.user.id) || ''));
+  return { ok: true, skipped: true, reason: 'unknown_view_submission', callback_id: callbackId };
+}
+
+function routeSlackShortcut_(payload) {
+  var callbackId = String(payload && payload.callback_id || '').trim();
+  if (callbackId.indexOf('onboarding_shortcut') === 0) return handleOnboardingShortcut(payload);
+
+  Logger.log('Unknown Slack shortcut callback_id=' + callbackId + ' user=' + ((payload.user && payload.user.id) || ''));
+  return { ok: true, skipped: true, reason: 'unknown_shortcut', callback_id: callbackId };
+}
+
 function handleSlackInteraction(payload) {
   try {
     if (!payload) return { ok: false, skipped: true };
 
-    if (payload.type === 'block_actions') {
-      var action = payload.actions && payload.actions[0];
-      if (!action) return { ok: true, skipped: true };
+    if (payload.type === 'block_actions') return routeSlackBlockAction_(payload);
+    if (payload.type === 'view_submission') return routeSlackViewSubmission_(payload);
+    if (payload.type === 'shortcut' || payload.type === 'message_action') return routeSlackShortcut_(payload);
 
-      // Lesson completion button path is processed asynchronously in queue worker.
-      if (action.action_id === 'lesson_complete') {
-        var userId = (payload.user && payload.user.id) || '';
-        appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: payload }));
-        scheduleQueuedPipeline_();
-        return { ok: true, queued: true };
-      }
-
-      return handleOnboardingButtonClick(payload);
-    }
-
-    if (payload.type === 'view_submission') {
-      return handleOnboardingModalSubmit(payload);
-    }
-
+    Logger.log('Unknown Slack interaction type=' + String(payload.type || '') + ' payload=' + JSON.stringify({ user: (payload.user && payload.user.id) || '', callback_id: payload.callback_id || '' }));
     return { ok: true, skipped: true };
   } catch (err) {
     Logger.log('handleSlackInteraction error: ' + err);
@@ -423,10 +511,14 @@ function onOpen() { SpreadsheetApp.getUi().createMenu('Slack Automation').addIte
 function menuEnsureTrackingColumns() { ensureTrackingColumns(); }
 function menuPostNextLesson() { postNextLesson(); }
 function menuPostAllLessons() { postAllLessons(); }
-function menuPostLessonById() {}
+function menuPostLessonById() {
+  throw new Error('menuPostLessonById is not wired. Use postLessonById(lessonId) directly from Apps Script for targeted posting.');
+}
 function menuPostNextOnboardingStep() { postNextOnboardingStep(); }
 function menuPostAllOnboardingSteps() { postAllOnboardingSteps(); }
-function menuPostOnboardingByIdentifier() {}
+function menuPostOnboardingByIdentifier() {
+  throw new Error('menuPostOnboardingByIdentifier is not wired. Use postOnboardingStepByIdentifier(stepId) directly from Apps Script.');
+}
 function menuTestSlackConnection() { testSlackConnection(); }
 function menuEnsureCurriculumDatabaseColumns() { ensureCurriculumDatabaseColumns(); }
 function reopenOnboardingStepModal(identifier) {
@@ -451,5 +543,9 @@ function resetOnboardingPostedStatus(identifier) {
 }
 function resolveOnboardingRowByIdentifierForMenu_(id) { return resolveOnboardingRowByIdentifier_(id, '', ''); }
 function menuGenerateStepIds() { generateStepIdsIfMissing(); }
-function menuReopenOnboardingModal() {}
-function menuResetOnboardingPostedStatus() {}
+function menuReopenOnboardingModal() {
+  throw new Error('menuReopenOnboardingModal requires a Slack trigger_id and cannot be run from the spreadsheet menu.');
+}
+function menuResetOnboardingPostedStatus() {
+  throw new Error('menuResetOnboardingPostedStatus is not wired. Use resetOnboardingPostedStatus(stepId) directly from Apps Script.');
+}

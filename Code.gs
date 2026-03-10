@@ -82,8 +82,13 @@ function doPost(e) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
     }
 
-    handleSlackInteraction(interactionPayload);
+    var interactionResult = handleSlackInteraction(interactionPayload) || {};
     if (interactionPayload.type === 'view_submission') {
+      if (interactionResult.response_action === 'errors') {
+        return ContentService
+          .createTextOutput(JSON.stringify({ response_action: 'errors', errors: interactionResult.errors || {} }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
       return ContentService
         .createTextOutput(JSON.stringify({ response_action: 'clear' }))
         .setMimeType(ContentService.MimeType.JSON);
@@ -94,12 +99,23 @@ function doPost(e) {
   }
 
   // Step 5b - block_actions arriving as JSON
-  if (body.type === 'block_actions' || body.type === 'view_submission') {
+  if (body.type === 'block_actions' || body.type === 'view_submission' || body.type === 'shortcut' || body.type === 'message_action') {
     if (shouldShortCircuitSlackDedupe_({ body: body, interactionPayload: body, retryMeta: retryMeta })) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
     }
 
-    handleSlackInteraction(body);
+    var bodyResult = handleSlackInteraction(body) || {};
+    if (body.type === 'view_submission') {
+      if (bodyResult.response_action === 'errors') {
+        return ContentService
+          .createTextOutput(JSON.stringify({ response_action: 'errors', errors: bodyResult.errors || {} }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      return ContentService
+        .createTextOutput(JSON.stringify({ response_action: 'clear' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     return ContentService
       .createTextOutput('')
       .setMimeType(ContentService.MimeType.TEXT);
