@@ -22,20 +22,76 @@ function logAIUsage(provider, agentName, inputApproxWords, outputApproxWords) {
 }
 
 function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
-  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
+  const response = 'Claude integration is not configured in this deployment. Falling back to command-driven LMS functions.';
   logAIUsage('claude', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
   return response;
 }
 
 function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
-  const response = 'AI integrations are disabled in this deployment. Please use command-driven LMS functions.';
-  logAIUsage('gemini', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(response));
-  return response;
+  const model = String(PROPS.getProperty('GEMINI_MODEL') || 'gemini-1.5-flash').trim();
+  const apiKey = String(PROPS.getProperty('GEMINI_API_KEY') || '').trim();
+  const disabled = String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true';
+  const effectiveMax = Math.max(64, Number(maxTokens || 300));
+
+  if (disabled || !apiKey) {
+    const fallback = 'Gemini is not configured. Please use command-driven LMS functions.';
+    logAIUsage('gemini', agentName || 'disabled', approxWords(systemPrompt) + approxWords(userMessage), approxWords(fallback));
+    return fallback;
+  }
+
+  const gemKey = 'GEMINI_GEM_' + String(agentName || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const gemInstruction = String(PROPS.getProperty(gemKey) || '').trim();
+  const finalSystemPrompt = gemInstruction ? (systemPrompt + '\n\nGem instruction:\n' + gemInstruction) : systemPrompt;
+
+  try {
+    const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
+    const payload = {
+      systemInstruction: { parts: [{ text: String(finalSystemPrompt || '') }] },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: String(userMessage || '') }]
+        }
+      ],
+      generationConfig: {
+        maxOutputTokens: effectiveMax,
+        temperature: 0.3
+      }
+    };
+
+    const res = UrlFetchApp.fetch(endpoint, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const status = res.getResponseCode();
+    const txt = res.getContentText() || '{}';
+    const data = JSON.parse(txt);
+    if (status >= 300 || data.error) {
+      throw new Error('Gemini API failed status=' + status + ' error=' + JSON.stringify(data.error || txt));
+    }
+
+    const out = (((data || {}).candidates || [])[0] || {}).content || {};
+    const parts = out.parts || [];
+    const response = parts.map(function(p) { return String((p && p.text) || ''); }).join('\n').trim();
+    const finalText = response || 'No response generated.';
+    logAIUsage('gemini', agentName || 'gemini', approxWords(finalSystemPrompt) + approxWords(userMessage), approxWords(finalText));
+    return finalText;
+  } catch (err) {
+    Logger.log('callGemini error: ' + err);
+    const fallback = 'I could not reach Gemini right now. Please retry shortly or continue with command-driven LMS functions.';
+    logAIUsage('gemini', agentName || 'gemini_error', approxWords(finalSystemPrompt) + approxWords(userMessage), approxWords(fallback));
+    return fallback;
+  }
 }
 
 function callAI(agentName, systemPrompt, userMessage, maxTokens) {
-  Logger.log('callAI disabled: ' + agentName);
-  return 'AI integrations are disabled in this deployment.';
+  const provider = getProvider(agentName);
+  if (provider === 'gemini') return callGemini(systemPrompt, userMessage, maxTokens, agentName);
+  if (provider === 'claude') return callClaude(systemPrompt, userMessage, maxTokens, agentName);
+  return callGemini(systemPrompt, userMessage, maxTokens, agentName);
 }
 
 
@@ -394,6 +450,27 @@ function agentReport(payload) {
   return postDM(payload.user_id, aiText, buildReportBlocks(learners, submissions, modules));
 }
 
+function agentHealth(payload) {
+  const schema = validateRequiredSchema();
+  const checks = [];
+
+  checks.push('*Schema:* ' + (schema.ok ? 'OK' : 'FAIL'));
+  if (!schema.ok) {
+    if (schema.missingSheets.length) checks.push('Missing sheets: ' + schema.missingSheets.join(', '));
+    if (schema.missingColumns.length) checks.push('Missing columns: ' + schema.missingColumns.slice(0, 12).join(', ') + (schema.missingColumns.length > 12 ? ' ...' : ''));
+  }
+
+  checks.push('*Slack token:* ' + (PROPS.getProperty('SLACK_BOT_TOKEN') ? 'SET' : 'MISSING'));
+  checks.push('*Signing secret:* ' + (PROPS.getProperty('SLACK_SIGNING_SECRET') ? 'SET' : 'MISSING'));
+  checks.push('*Sheets ID:* ' + (PROPS.getProperty('SHEETS_ID') ? 'SET' : 'MISSING'));
+  checks.push('*Lesson trigger:* ' + (isLessonTriggerActive() ? 'ACTIVE' : 'PAUSED'));
+  checks.push('*Token fallback auth:* ' + (isSlackTokenFallbackEnabled_() ? 'ENABLED' : 'DISABLED'));
+  checks.push('*AI disabled:* ' + (String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true' ? 'YES' : 'NO'));
+
+  const summary = '*LMS Health Check*\n' + checks.join('\n');
+  return postDM(payload.user_id, summary);
+}
+
 function agentHelp(payload) {
   const admin = isAdmin(payload.user_id);
   const learnerCmds = [
@@ -411,6 +488,7 @@ function agentHelp(payload) {
     '/report — Generate a cohort report.',
     '/gaps — Show learners who are behind.',
     '/backup — Create a backup of LMS sheets.',
+    '/health — Validate schema and configuration health.',
     '/mix [topic] — Generate a learning mix.',
     '/media <lessonId> — Review media needs for a lesson.',
     '/cert — Check certification eligibility.',
@@ -459,7 +537,7 @@ function agentCert(payload) {
 
   const moduleId = learner['Current Module'];
   const lessons = getAllRows(SHEET_LESSONS);
-  const lIdxModule = lessons.headers.indexOf('Module');
+  const lIdxModule = lessons.headers.indexOf('ModuleID');
   const lIdxStatus = lessons.headers.indexOf('Status');
   const lIdxLesson = lessons.headers.indexOf('LessonID');
 

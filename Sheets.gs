@@ -42,6 +42,49 @@ function ensureCurriculumDatabaseColumns() {
   ensureSheetColumnsByName_(SHEET_SUBMISSIONS, ['Timestamp','Learner','Lesson','MissionID','Submit Code','Evidence','Method','Score']);
 }
 
+function validateRequiredSchema() {
+  const required = [
+    { name: SHEET_COURSES, cols: ['CourseID', 'Course Title'] },
+    { name: SHEET_MODULES, cols: ['ModuleID', 'CourseID'] },
+    { name: SHEET_COURSE_MODULE_MAP, cols: ['CourseID', 'ModuleID', 'Sequence'] },
+    { name: SHEET_LESSONS, cols: ['LessonID', 'CourseID', 'ModuleID', 'Status', 'Lesson Order'] },
+    { name: SHEET_MISSIONS, cols: ['MissionID', 'LessonID', 'Submit Code'] },
+    { name: SHEET_QA, cols: ['Lesson', 'QA Verdict', 'Status'] },
+    { name: SHEET_SLACK_DELIVERY, cols: ['LessonID', 'Slack Thread Text', 'Submit Code', 'Slack TS', 'Slack Channel'] },
+    { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
+    { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
+    { name: SHEET_QUEUE, cols: ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'] },
+    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome'] },
+    { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
+    { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
+    { name: 'Content_Pipeline', cols: ['PipelineID', 'LessonID', 'Stage', 'Status'] },
+    { name: 'Prompt_Configs', cols: ['PromptID', 'Agent_Name', 'Version', 'Provider', 'Is_Active'] },
+    { name: 'Gem_Roles', cols: ['GemRoleID', 'Agent_Name', 'Gem_Key', 'Model', 'Status'] },
+    { name: 'Publish_Queue', cols: ['PublishID', 'LessonID', 'Status', 'Requested_At'] },
+    { name: 'Generated_Drafts', cols: ['DraftID', 'LessonID', 'PromptID', 'Status', 'Created_At'] }
+  ];
+
+  const missingSheets = [];
+  const missingColumns = [];
+  required.forEach(function(spec) {
+    const sheet = SS.getSheetByName(spec.name);
+    if (!sheet) {
+      missingSheets.push(spec.name);
+      return;
+    }
+    const headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(function(h) { return String(h || '').trim(); });
+    spec.cols.forEach(function(col) {
+      if (headers.indexOf(col) === -1) missingColumns.push(spec.name + ':' + col);
+    });
+  });
+
+  return {
+    ok: missingSheets.length === 0 && missingColumns.length === 0,
+    missingSheets: missingSheets,
+    missingColumns: missingColumns
+  };
+}
+
 function getLearnerRecord(slackUserId) {
   const data = getAllRows(SHEET_LEARNERS);
   const idxUser = data.headers.indexOf('UserID');
@@ -257,8 +300,59 @@ function recordLessonMetricTouch(lessonId) {
 }
 
 function appendToQueue(userId, payloadJson) {
-  const sheet = ensureQueueSheet();
-  sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING']);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new Error('Queue lock unavailable for append');
+  try {
+    const sheet = ensureQueueSheet();
+    sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING', 0, '']);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function pruneQueueRows_() {
+  try {
+    const retentionDays = Number(PROPS.getProperty('QUEUE_RETENTION_DAYS') || 7);
+    const maxRows = Number(PROPS.getProperty('QUEUE_MAX_ROWS') || 5000);
+    const now = Date.now();
+
+    const data = getAllRows(SHEET_QUEUE);
+    const headers = data.headers;
+    const idxCreated = headers.indexOf('Created');
+    const idxStatus = headers.indexOf('Status');
+    if (idxCreated < 0 || idxStatus < 0) return { ok: false, skipped: true };
+
+    const deleteRows = [];
+    for (let i = 0; i < data.rows.length; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+      if (status !== 'DONE' && status !== 'DEAD') continue;
+      const created = new Date(data.rows[i][idxCreated]).getTime();
+      if (!created) continue;
+      const ageDays = (now - created) / (24 * 60 * 60 * 1000);
+      if (ageDays >= retentionDays) deleteRows.push(i + 2);
+    }
+
+    // Hard cap trim when queue grows too large (oldest terminal rows first).
+    const totalRows = data.rows.length;
+    if (totalRows - deleteRows.length > maxRows) {
+      for (let i = 0; i < data.rows.length && (totalRows - deleteRows.length) > maxRows; i++) {
+        const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+        if (status === 'DONE' || status === 'DEAD') {
+          const rowNo = i + 2;
+          if (deleteRows.indexOf(rowNo) === -1) deleteRows.push(rowNo);
+        }
+      }
+    }
+
+    if (!deleteRows.length) return { ok: true, deleted: 0 };
+
+    deleteRows.sort(function(a, b) { return b - a; });
+    deleteRows.forEach(function(rowNo) { data.sheet.deleteRow(rowNo); });
+    return { ok: true, deleted: deleteRows.length };
+  } catch (err) {
+    Logger.log('pruneQueueRows_ error: ' + err);
+    return { ok: false, error: String(err) };
+  }
 }
 
 function updateLessonMediaColumns(lessonId, mediaRequired, mediaBriefText) {
@@ -279,13 +373,17 @@ function updateLessonMediaColumns(lessonId, mediaRequired, mediaBriefText) {
 
 function ensureQueueSheet() {
   let sheet = SS.getSheetByName(SHEET_QUEUE);
-  const headers = ['Created', 'User_Id', 'Payload_Json', 'Status'];
+  const headers = ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'];
   if (!sheet) {
     sheet = SS.insertSheet(SHEET_QUEUE);
     sheet.appendRow(headers);
     return sheet;
   }
-  if (sheet.getLastRow() === 0) sheet.appendRow(headers);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+  } else {
+    ensureSheetColumnsByName_(SHEET_QUEUE, headers);
+  }
   return sheet;
 }
 

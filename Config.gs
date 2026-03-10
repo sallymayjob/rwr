@@ -46,8 +46,24 @@ function isAdmin(userId) {
 }
 
 function adminOnly(payload, fn) {
-  if (isAdmin(payload.user_id)) return fn();
-  return { text: "You don't have permission to use this command." };
+  var actor = payload && payload.user_id ? payload.user_id : '';
+  var command = payload && payload.command ? payload.command : '';
+  var target = payload && payload.text ? String(payload.text || '').trim().split(/\s+/)[0] : '';
+
+  if (!isAdmin(actor)) {
+    appendAdminAction(actor, command, target, 'DENIED', 'User is not in ADMIN_USER_IDS');
+    return postDM(actor, "You don't have permission to use this command.");
+  }
+
+  try {
+    var result = fn();
+    appendAdminAction(actor, command, target, 'SUCCESS', '');
+    return result;
+  } catch (err) {
+    appendAdminAction(actor, command, target, 'ERROR', String(err));
+    appendErrorLog('adminOnly', 'ADMIN_COMMAND_ERROR', String(err), { command: command, actor: actor, target: target }, false);
+    return postDM(actor, 'Admin command failed. Please check logs and /health.');
+  }
 }
 
 function isLessonTriggerActive() {
