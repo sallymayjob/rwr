@@ -54,7 +54,11 @@ function doPost(e) {
         team_id: e.parameter.team_id,
         response_url: e.parameter.response_url
       };
-      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }));
+      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }), {
+        kind: 'command',
+        source_event_id: retryMeta.signature || '',
+        response_url: payload.response_url || ''
+      });
       scheduleQueuedPipeline_();
       return ContentService
         .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
@@ -128,7 +132,10 @@ function doPost(e) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
     }
 
-    appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }));
+    appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }), {
+      kind: 'workflow_enroll',
+      source_event_id: workflowPayload.trigger_id || retryMeta.signature || ''
+    });
     scheduleQueuedPipeline_();
     return ContentService
       .createTextOutput(JSON.stringify({ ok: true, message: 'Enrollment queued' }))
@@ -144,7 +151,10 @@ function doPost(e) {
     const event = body.event;
     const userId = event && (event.user || event.item_user);
     if (event) {
-      appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }));
+      appendToQueue(userId || '', JSON.stringify({ kind: 'event', payload: event }), {
+        kind: 'event',
+        source_event_id: body.event_id || retryMeta.signature || ''
+      });
       scheduleQueuedPipeline_();
     }
     return ContentService
@@ -222,7 +232,7 @@ function shouldShortCircuitSlackDedupe_(opts) {
 
 function scheduleQueuedPipeline_() {
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(3000)) return;
+  if (!lock.tryLock(150)) return;
   try {
     // Keep slash-command ack path fast: do not wait on locks in webhook request path.
     var now = Date.now();
@@ -301,11 +311,15 @@ function hasPendingQueueJobs_() {
   try {
     ensureQueueSheet();
     const data = getAllRows(SHEET_QUEUE);
-    const idxStatus = data.headers.indexOf('Status');
-    if (idxStatus === -1) return false;
+    const idxStatus = data.headers.indexOf('status');
+    const idxNextAttempt = data.headers.indexOf('next_attempt_at');
+    if (idxStatus === -1 || idxNextAttempt === -1) return false;
+
+    const now = Date.now();
     for (let i = 0; i < data.rows.length; i++) {
-      const status = String(data.rows[i][idxStatus] || '').trim();
-      if (status === 'PENDING' || status === 'RUNNING') return true;
+      const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+      const nextAttemptAt = new Date(data.rows[i][idxNextAttempt] || 0).getTime() || 0;
+      if (status === 'PENDING' && nextAttemptAt <= now) return true;
     }
     return false;
   } catch (err) {
@@ -314,107 +328,186 @@ function hasPendingQueueJobs_() {
   }
 }
 
+function claimQueueJobs_(batchLimit) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(2000)) return [];
+  try {
+    ensureQueueSheet();
+    const data = getAllRows(SHEET_QUEUE);
+    const headers = data.headers;
+    const idxJobId = headers.indexOf('job_id');
+    const idxStatus = headers.indexOf('status');
+    const idxNextAttempt = headers.indexOf('next_attempt_at');
+    const idxStarted = headers.indexOf('started_at');
+    const idxPayload = headers.indexOf('payload_json');
+    if (idxJobId === -1 || idxStatus === -1 || idxNextAttempt === -1 || idxStarted === -1 || idxPayload === -1) {
+      throw new Error('Queue sheet headers invalid for claimQueueJobs_.');
+    }
+
+    const claimed = [];
+    const now = Date.now();
+    for (let i = 0; i < data.rows.length && claimed.length < batchLimit; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+      const nextAttemptAt = new Date(data.rows[i][idxNextAttempt] || 0).getTime() || 0;
+      if (status !== 'PENDING' || nextAttemptAt > now) continue;
+
+      const sheetRow = i + 2;
+      data.sheet.getRange(sheetRow, idxStatus + 1).setValue('RUNNING');
+      data.sheet.getRange(sheetRow, idxStarted + 1).setValue(new Date());
+      claimed.push({
+        row: sheetRow,
+        job_id: String(data.rows[i][idxJobId] || ''),
+        payload_json: String(data.rows[i][idxPayload] || '{}')
+      });
+    }
+
+    SpreadsheetApp.flush();
+    return claimed;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function markQueueJobCompleted_(jobId, latencyMs, resultMeta) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(2000)) return;
+  try {
+    const data = getAllRows(SHEET_QUEUE);
+    const h = data.headers;
+    const idxJobId = h.indexOf('job_id');
+    const idxStatus = h.indexOf('status');
+    const idxFinished = h.indexOf('finished_at');
+    const idxLatency = h.indexOf('processing_latency_ms');
+    const idxError = h.indexOf('last_error');
+    const idxUser = h.indexOf('user_id');
+    const idxKind = h.indexOf('kind');
+    for (let i = 0; i < data.rows.length; i++) {
+      if (String(data.rows[i][idxJobId] || '') !== String(jobId)) continue;
+      const row = i + 2;
+      data.sheet.getRange(row, idxStatus + 1).setValue('DONE');
+      data.sheet.getRange(row, idxFinished + 1).setValue(new Date());
+      data.sheet.getRange(row, idxLatency + 1).setValue(Number(latencyMs || 0));
+      data.sheet.getRange(row, idxError + 1).setValue('');
+      appendAuditLog('QUEUE_JOB_DONE', String(data.rows[i][idxUser] || ''), 'Queue', String(jobId), 'DONE', {
+        kind: String(data.rows[i][idxKind] || ''),
+        processing_latency_ms: Number(latencyMs || 0),
+        meta: resultMeta || {}
+      });
+      break;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function markQueueJobFailed_(jobId, errText, maxRetries, startedAtMs) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(2000)) return;
+  try {
+    const data = getAllRows(SHEET_QUEUE);
+    const h = data.headers;
+    const idxJobId = h.indexOf('job_id');
+    const idxStatus = h.indexOf('status');
+    const idxAttempt = h.indexOf('attempt_count');
+    const idxError = h.indexOf('last_error');
+    const idxNext = h.indexOf('next_attempt_at');
+    const idxFinished = h.indexOf('finished_at');
+    const idxLatency = h.indexOf('processing_latency_ms');
+
+    for (let i = 0; i < data.rows.length; i++) {
+      if (String(data.rows[i][idxJobId] || '') !== String(jobId)) continue;
+      const row = i + 2;
+      const nextAttempt = Number(data.rows[i][idxAttempt] || 0) + 1;
+      const isDead = nextAttempt >= maxRetries;
+      const backoffMs = Math.min(10 * 60 * 1000, Math.pow(2, nextAttempt) * 1000);
+      data.sheet.getRange(row, idxAttempt + 1).setValue(nextAttempt);
+      data.sheet.getRange(row, idxError + 1).setValue(String(errText || 'Unknown queue job error'));
+      data.sheet.getRange(row, idxStatus + 1).setValue(isDead ? 'DEAD' : 'PENDING');
+      data.sheet.getRange(row, idxNext + 1).setValue(new Date(Date.now() + backoffMs));
+      data.sheet.getRange(row, idxFinished + 1).setValue(new Date());
+      data.sheet.getRange(row, idxLatency + 1).setValue(Math.max(0, Date.now() - Number(startedAtMs || Date.now())));
+      appendErrorLog('processQueuedPipeline', 'QUEUE_JOB_ERROR', String(errText), {
+        job_id: String(jobId),
+        retry_count: nextAttempt,
+        next_attempt_at: new Date(Date.now() + backoffMs)
+      }, !isDead);
+      break;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function notifyQueueJobResult_(job, ok, message) {
+  try {
+    const payload = JSON.parse(String(job.payload_json || '{}'));
+    const body = payload.payload || {};
+    const responseUrl = String((body && body.response_url) || '').trim();
+    if (!responseUrl) return;
+
+    const text = ok ? ('✅ ' + (body.command || 'Request') + ' processed.') : ('❌ ' + (body.command || 'Request') + ' failed: ' + String(message || 'Unknown error'));
+    postToResponseUrl(responseUrl, { response_type: 'ephemeral', text: text });
+  } catch (err) {
+    Logger.log('notifyQueueJobResult_ error: ' + err);
+  }
+}
+
 function processQueuedPipeline() {
   const start = Date.now();
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) {
-    scheduleQueuedPipeline_();
-    return;
-  }
-
   const batchLimit = Number(PROPS.getProperty('QUEUE_BATCH_LIMIT') || 15);
   const maxRuntimeMs = Number(PROPS.getProperty('QUEUE_MAX_RUNTIME_MS') || 240000);
   const maxRetries = Number(PROPS.getProperty('QUEUE_MAX_RETRIES') || 3);
 
   try {
-    ensureQueueSheet();
-    const data = getAllRows(SHEET_QUEUE);
-    const headers = data.headers;
-    const rows = data.rows;
-    const idxPayload = headers.indexOf('Payload_Json');
-    const idxStatus = headers.indexOf('Status');
-    const idxRetry = headers.indexOf('Retry_Count');
-    const idxError = headers.indexOf('Last_Error');
-
-    if (idxPayload === -1 || idxStatus === -1 || idxRetry === -1 || idxError === -1) {
-      throw new Error('Queue sheet headers are invalid. Expected Payload_Json, Status, Retry_Count, Last_Error.');
-    }
-
-    const candidates = [];
-    for (let i = 0; i < rows.length; i++) {
-      const status = String(rows[i][idxStatus] || '').trim();
-      if (status === 'PENDING') {
-        candidates.push(i);
-      }
-      if (candidates.length >= batchLimit) break;
-    }
-
+    const claimed = claimQueueJobs_(batchLimit);
     let processed = 0;
-    for (let j = 0; j < candidates.length; j++) {
+
+    for (let j = 0; j < claimed.length; j++) {
       if (Date.now() - start >= maxRuntimeMs) {
         Logger.log('processQueuedPipeline time budget reached; stopping early. processed=' + processed);
         break;
       }
 
-      const rowIdx = candidates[j];
-      const sheetRow = rowIdx + 2;
-
-      // Mark RUNNING per row before work so stale work can be retried on next run.
-      data.sheet.getRange(sheetRow, idxStatus + 1).setValue('RUNNING');
-      data.sheet.getRange(sheetRow, idxError + 1).setValue('');
-
+      const job = claimed[j];
+      const jobStart = Date.now();
       try {
-        const payloadJson = rows[rowIdx][idxPayload];
-        const job = JSON.parse(payloadJson || '{}');
+        const envelope = JSON.parse(job.payload_json || '{}');
 
-        if (job.kind === 'command') {
-          if (shouldSkipDuplicateCommand_(job.payload)) {
-            // Intentionally skip duplicate command to prevent repeated onboarding/posts.
-          } else {
-            routeCommand(job.payload);
-          }
-        } else if (job.kind === 'event') {
-          routeEvent(job.payload);
-        } else if (job.kind === 'workflow_enroll') {
-          handleWorkflowEnroll(job.payload);
-        } else if (job.kind === 'block_action') {
-          const action = job.payload && job.payload.actions && job.payload.actions[0];
+        if (envelope.kind === 'command') {
+          if (!shouldSkipDuplicateCommand_(envelope.payload)) routeCommand(envelope.payload);
+        } else if (envelope.kind === 'event') {
+          routeEvent(envelope.payload);
+        } else if (envelope.kind === 'workflow_enroll') {
+          handleWorkflowEnroll(envelope.payload);
+        } else if (envelope.kind === 'block_action') {
+          const action = envelope.payload && envelope.payload.actions && envelope.payload.actions[0];
           if (action && action.value) {
-            try {
-              const value = JSON.parse(action.value);
-              if (value.lesson_id && value.user_id) {
-                var delivery = getLessonDeliveryRow(value.lesson_id);
-                var submitCode = delivery ? String(delivery['Submit Code'] || '') : '';
-                var mission = getMissionBySubmitCode(submitCode);
-                var missionId = mission ? String(mission['MissionID'] || '') : '';
-                writeSubmission(value.lesson_id, value.user_id, '', 'block_action', missionId, submitCode, 'button_mark_complete');
-                updateLearnerProgress(value.user_id, value.lesson_id, missionId);
-              }
-            } catch (parseErr) {
-              Logger.log('block_action parse error: ' + parseErr);
+            const value = JSON.parse(action.value);
+            if (value.lesson_id && value.user_id) {
+              var delivery = getLessonDeliveryRow(value.lesson_id);
+              var submitCode = delivery ? String(delivery['Submit Code'] || '') : '';
+              var mission = getMissionBySubmitCode(submitCode);
+              var missionId = mission ? String(mission['MissionID'] || '') : '';
+              writeSubmission(value.lesson_id, value.user_id, '', 'block_action', missionId, submitCode, 'button_mark_complete');
+              updateLearnerProgress(value.user_id, value.lesson_id, missionId);
             }
           }
         } else {
-          Logger.log('Unknown queue kind at row ' + sheetRow);
+          Logger.log('Unknown queue kind for job ' + job.job_id);
         }
 
-        data.sheet.getRange(sheetRow, idxStatus + 1).setValue('DONE');
-        appendAuditLog('QUEUE_JOB_DONE', (job && job.payload && (job.payload.user_id || job.payload.user)) || '', 'Queue', String(sheetRow), 'DONE', { kind: job.kind || '' });
+        const latencyMs = Date.now() - jobStart;
+        markQueueJobCompleted_(job.job_id, latencyMs, { kind: envelope.kind || '' });
+        if (envelope.kind === 'command') notifyQueueJobResult_(job, true, '');
       } catch (errJob) {
-        Logger.log('Queue row error ' + sheetRow + ': ' + errJob);
-        const priorRetry = Number(rows[rowIdx][idxRetry] || 0);
-        const nextRetry = priorRetry + 1;
-        data.sheet.getRange(sheetRow, idxRetry + 1).setValue(nextRetry);
-        data.sheet.getRange(sheetRow, idxError + 1).setValue(String(errJob));
-        data.sheet.getRange(sheetRow, idxStatus + 1).setValue(nextRetry >= maxRetries ? 'DEAD' : 'PENDING');
-        appendErrorLog('processQueuedPipeline', 'QUEUE_JOB_ERROR', String(errJob), { sheet_row: sheetRow, retry_count: nextRetry, payload_json: rows[rowIdx][idxPayload] || '' }, nextRetry < maxRetries);
+        Logger.log('Queue job error ' + job.job_id + ': ' + errJob);
+        markQueueJobFailed_(job.job_id, String(errJob), maxRetries, jobStart);
+        notifyQueueJobResult_(job, false, errJob);
       }
-
       processed++;
     }
 
-    SpreadsheetApp.flush();
-    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, processed=' + processed + ', candidates=' + candidates.length);
+    Logger.log('processQueuedPipeline completed in ' + (Date.now() - start) + 'ms, processed=' + processed + ', claimed=' + claimed.length);
   } catch (err) {
     Logger.log('processQueuedPipeline error: ' + err);
   } finally {
@@ -426,7 +519,6 @@ function processQueuedPipeline() {
         PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
       }
 
-      // Opportunistic queue maintenance to keep Queue scans bounded.
       var lastPruneMs = Number(PROPS.getProperty('QUEUE_LAST_PRUNE_MS') || 0);
       var pruneIntervalMs = Number(PROPS.getProperty('QUEUE_PRUNE_INTERVAL_MS') || (60 * 60 * 1000));
       if ((Date.now() - lastPruneMs) >= pruneIntervalMs) {
@@ -436,9 +528,9 @@ function processQueuedPipeline() {
     } catch (cleanupErr) {
       Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);
     }
-    lock.releaseLock();
   }
 }
+
 function routeCommand(payload) {
   switch (payload.command) {
     case '/learn': return agentTutor(payload);
