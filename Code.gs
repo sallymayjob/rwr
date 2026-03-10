@@ -5,17 +5,27 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  const rawBody = e.postData.contents || '';
+  // Parse the raw body exactly as received from Slack.
+  const rawBody = e.postData.getDataAsString() || e.postData.contents || '';
+
+  // Parse JSON payload when possible (events + url_verification are JSON).
+  var payload = null;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch (ignore) {
+    payload = null;
+  }
+
+  // Check if Slack is sending a url_verification challenge.
+  if (payload && payload.type === 'url_verification' && payload.challenge) {
+    // Return the challenge string directly to Slack.
+    return ContentService.createTextOutput(payload.challenge);
+  }
+
   const retryMeta = getSlackRetryMetadata_(e);
 
-  // Step 1 - attempt JSON parse (events and block_actions arrive as JSON)
-  let body = {};
-  try {
-    body = JSON.parse(rawBody);
-  } catch (err) {
-    // Not JSON - likely a slash command (application/x-www-form-urlencoded)
-    // body stays as {} and will be populated from e.parameter below
-  }
+  // Parse a request body object for downstream routing (JSON or form-encoded).
+  let body = payload || parseIncomingBody(rawBody, e.postData.type || '');
 
   // Step 2 - validate Slack signature for all request types.
   if (!validateSlackRequest(e)) {
@@ -24,14 +34,7 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // Step 3 - URL verification challenge after signature validation
-  if (body.type === 'url_verification') {
-    return ContentService
-      .createTextOutput(body.challenge)
-      .setMimeType(ContentService.MimeType.TEXT);
-  }
-
-  // Step 3b - coarse request-level idempotency for Slack retries/replays.
+  // Step 3 - coarse request-level idempotency for Slack retries/replays.
   if (isDuplicateSlackRequest_(rawBody, e)) {
     logSlackDedupeAudit_('request', 'HIT', { dedupe_key: 'request_signature', retry: retryMeta });
     return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
@@ -41,7 +44,7 @@ function doPost(e) {
     Logger.log('Slack retry metadata observed: ' + JSON.stringify(retryMeta));
   }
 
-  // Step 4 - for slash commands, body is form-encoded - read from e.parameter
+  // Step 4 - for slash commands, acknowledge immediately and defer heavy work.
   const command = e.parameter && e.parameter.command;
   if (command) {
     try {
@@ -54,19 +57,16 @@ function doPost(e) {
         team_id: e.parameter.team_id,
         response_url: e.parameter.response_url
       };
-      appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }), {
-        kind: 'command',
-        source_event_id: retryMeta.signature || '',
-        response_url: payload.response_url || ''
-      });
-      scheduleQueuedPipeline_();
-      return ContentService
-        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⏳ Queued. I will process this command shortly.' }))
-        .setMimeType(ContentService.MimeType.JSON);
+
+      enqueueDeferredSlashCommand_(payload, retryMeta, rawBody);
+      scheduleDeferredSlashCommandWorker_();
+
+      // Keep Slack slash-command ACK under 3 seconds to avoid operation_timeout.
+      return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
     } catch (cmdErr) {
-      Logger.log('doPost slash command queue error: ' + cmdErr);
+      Logger.log('doPost slash command defer error: ' + cmdErr);
       return ContentService
-        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⚠️ Command received but queue write failed. Please retry once.' }))
+        .createTextOutput(JSON.stringify({ response_type: 'ephemeral', text: '⚠️ Command received but could not be queued. Please retry once.' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
   }
@@ -270,10 +270,124 @@ function clearQueuedPipelineTriggers_() {
   });
 }
 
+function clearDeferredSlashTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processDeferredSlashCommandJobs') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+
+function enqueueDeferredSlashCommand_(payload, retryMeta, rawBody) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(500)) throw new Error('Deferred slash queue lock unavailable');
+
+  try {
+    var jobId = 'slash_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
+    var key = 'SLASH_DEFERRED_JOB_' + jobId;
+    var record = {
+      job_id: jobId,
+      created_at_ms: Date.now(),
+      payload: payload || {},
+      retry_meta: retryMeta || {},
+      raw_body: String(rawBody || '')
+    };
+    PROPS.setProperty(key, JSON.stringify(record));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function scheduleDeferredSlashCommandWorker_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(150)) return;
+  try {
+    var now = Date.now();
+    var notBefore = Number(PROPS.getProperty('SLASH_DEFERRED_TRIGGER_NOT_BEFORE_MS') || 0);
+    if (notBefore && now < notBefore) return;
+
+    var triggers = ScriptApp.getProjectTriggers();
+    var exists = triggers.some(function(t) {
+      return t.getHandlerFunction && t.getHandlerFunction() === 'processDeferredSlashCommandJobs';
+    });
+
+    if (!exists) {
+      ScriptApp.newTrigger('processDeferredSlashCommandJobs')
+        .timeBased()
+        .after(100)
+        .create();
+    }
+
+    PROPS.setProperty('SLASH_DEFERRED_TRIGGER_NOT_BEFORE_MS', String(now + 2000));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function processDeferredSlashCommandJobs() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(2000)) return;
+
+  try {
+    // One-shot worker triggers can accumulate under burst load; clear them up front.
+    clearDeferredSlashTriggers_();
+
+    var all = PROPS.getProperties();
+    var keys = Object.keys(all).filter(function(k) { return k.indexOf('SLASH_DEFERRED_JOB_') === 0; }).sort();
+    var maxPerRun = Number(PROPS.getProperty('SLASH_DEFERRED_BATCH_LIMIT') || 10);
+    var processed = 0;
+
+    for (var i = 0; i < keys.length && processed < maxPerRun; i++) {
+      var key = keys[i];
+      var raw = all[key];
+      if (!raw) continue;
+
+      try {
+        var record = JSON.parse(raw);
+        var payload = record.payload || {};
+        appendToQueue(payload.user_id, JSON.stringify({ kind: 'command', payload: payload }), {
+          kind: 'command',
+          source_event_id: (record.retry_meta && record.retry_meta.signature) || '',
+          response_url: payload.response_url || ''
+        });
+        PROPS.deleteProperty(key);
+        processed++;
+      } catch (jobErr) {
+        Logger.log('processDeferredSlashCommandJobs job error: ' + jobErr + ' key=' + key);
+        // Drop malformed/poisoned deferred records to prevent infinite retries.
+        PROPS.deleteProperty(key);
+      }
+    }
+
+    scheduleQueuedPipeline_();
+
+    var remaining = Object.keys(PROPS.getProperties()).some(function(k) { return k.indexOf('SLASH_DEFERRED_JOB_') === 0; });
+    if (remaining) {
+      var hasWorker = ScriptApp.getProjectTriggers().some(function(t) {
+        return t.getHandlerFunction && t.getHandlerFunction() === 'processDeferredSlashCommandJobs';
+      });
+      if (!hasWorker) {
+        ScriptApp.newTrigger('processDeferredSlashCommandJobs').timeBased().after(250).create();
+      }
+    } else {
+      clearDeferredSlashTriggers_();
+      PROPS.deleteProperty('SLASH_DEFERRED_TRIGGER_NOT_BEFORE_MS');
+    }
+  } catch (err) {
+    Logger.log('processDeferredSlashCommandJobs error: ' + err);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 
 function stopQueuedPipelineLoop() {
   clearQueuedPipelineTriggers_();
+  clearDeferredSlashTriggers_();
   PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
+  PROPS.deleteProperty('SLASH_DEFERRED_TRIGGER_NOT_BEFORE_MS');
   Logger.log('All processQueuedPipeline triggers removed and debounce reset.');
 }
 
