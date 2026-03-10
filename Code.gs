@@ -392,10 +392,19 @@ function markQueueJobCompleted_(jobId, latencyMs, resultMeta) {
       data.sheet.getRange(row, idxFinished + 1).setValue(new Date());
       data.sheet.getRange(row, idxLatency + 1).setValue(Number(latencyMs || 0));
       data.sheet.getRange(row, idxError + 1).setValue('');
+      var jobKind = String(data.rows[i][idxKind] || '');
       appendAuditLog('QUEUE_JOB_DONE', String(data.rows[i][idxUser] || ''), 'Queue', String(jobId), 'DONE', {
-        kind: String(data.rows[i][idxKind] || ''),
+        execution_type: 'queue_job',
+        kind: jobKind,
+        latency_ms: Number(latencyMs || 0),
         processing_latency_ms: Number(latencyMs || 0),
         meta: resultMeta || {}
+      });
+      appendAuditLog('QUEUE_JOB_LIFECYCLE', String(data.rows[i][idxUser] || ''), 'Queue', String(jobId), 'COMPLETED', {
+        execution_type: 'queue_job',
+        kind: jobKind,
+        latency_ms: Number(latencyMs || 0),
+        failure_reason: ''
       });
       break;
     }
@@ -487,6 +496,8 @@ function markQueueJobFailed_(job, errText, maxAttempts, startedAtMs, classificat
     const idxLatency = h.indexOf('processing_latency_ms');
     const idxSnapshot = h.indexOf('dead_letter_error_json');
     const idxLastAttempt = h.indexOf('last_attempt_at');
+    const idxUser = h.indexOf('user_id');
+    const idxKind = h.indexOf('kind');
 
     for (let i = 0; i < data.rows.length; i++) {
       if (String(data.rows[i][idxJobId] || '') !== String(job.job_id)) continue;
@@ -517,6 +528,30 @@ function markQueueJobFailed_(job, errText, maxAttempts, startedAtMs, classificat
           error: String(errText || ''),
           payload_json: String(job.payload_json || '{}')
         }));
+      }
+
+      var failureReason = String(errText || 'Unknown queue job error');
+      var jobKind = idxKind >= 0 ? String(data.rows[i][idxKind] || '') : '';
+      var actorUser = idxUser >= 0 ? String(data.rows[i][idxUser] || '') : String(job.user_id || '');
+      appendAuditLog('QUEUE_JOB_LIFECYCLE', actorUser, 'Queue', String(job.job_id || ''), 'FAILED', {
+        execution_type: 'queue_job',
+        kind: jobKind,
+        attempt: nextAttempt,
+        latency_ms: Math.max(0, Date.now() - Number(startedAtMs || Date.now())),
+        failure_reason: failureReason,
+        error_class: String(classification && classification.error_class || 'UNKNOWN'),
+        provider_response_code: classification && classification.response_code !== '' ? Number(classification.response_code) : ''
+      });
+      if (isDead) {
+        appendAuditLog('QUEUE_JOB_LIFECYCLE', actorUser, 'Queue', String(job.job_id || ''), 'DEAD_LETTER', {
+          execution_type: 'queue_job',
+          kind: jobKind,
+          attempt: nextAttempt,
+          latency_ms: Math.max(0, Date.now() - Number(startedAtMs || Date.now())),
+          failure_reason: failureReason,
+          error_class: String(classification && classification.error_class || 'UNKNOWN'),
+          provider_response_code: classification && classification.response_code !== '' ? Number(classification.response_code) : ''
+        });
       }
 
       appendErrorLog('processQueuedPipeline', String(classification && classification.error_class || 'QUEUE_JOB_ERROR'), String(errText), {
@@ -570,11 +605,18 @@ function processQueuedPipeline() {
       try {
         const envelope = JSON.parse(job.payload_json || '{}');
         appendAuditLog('QUEUE_JOB_ATTEMPT', String(job.user_id || ''), 'Queue', String(job.job_id || ''), 'START', {
+          execution_type: 'queue_job',
           attempt: attemptNo,
           timestamp: new Date().toISOString(),
           kind: String(envelope.kind || ''),
           error_class: 'NONE',
           provider_response_code: ''
+        });
+        appendAuditLog('QUEUE_JOB_LIFECYCLE', String(job.user_id || ''), 'Queue', String(job.job_id || ''), 'STARTED', {
+          execution_type: 'queue_job',
+          attempt: attemptNo,
+          kind: String(envelope.kind || ''),
+          latency_ms: ''
         });
 
         if (envelope.kind === 'command') {

@@ -42,7 +42,7 @@ function getSchemaDefinitionMap() {
     [SHEET_LEARNERS]: ['UserID','Name','Email','Enrolled Course','Current Module','Progress (%)','Status','Joined Date','Completed Missions','Completed Lessons','Last LessonID','Last MissionID'],
     [SHEET_SUBMISSIONS]: ['Timestamp','Learner','Lesson','MissionID','Submit Code','Evidence','Method','Score'],
     [SHEET_QUEUE]: ['job_id','source_event_id','status','attempt_count','max_attempts','next_attempt_at','payload_ref','last_error_class','last_provider_response_code','dead_letter_error_json','last_attempt_at'],
-    'Audit_Log': ['Timestamp','Action','Actor_UserID','Entity_Type','Entity_ID','Outcome','Details_JSON'],
+    'Audit_Log': ['Timestamp','Action','Actor_UserID','Entity_Type','Entity_ID','Outcome','Execution_Type','Latency_MS','Failure_Reason','Details_JSON'],
     'Error_Log': ['Timestamp','Source','Error_Class','Message','Retryable','Resolved_Status'],
     'Admin_Actions': ['Timestamp','Admin_UserID','Command','Outcome'],
     'Content_Pipeline': ['PipelineID','LessonID','Stage','Status'],
@@ -409,7 +409,17 @@ function appendToQueue(userId, payloadJson, metadata) {
       responseUrl
     ];
     sheet.appendRow(row);
-    return row[0];
+    var jobId = row[0];
+    var lifecycleDetails = {
+      execution_type: 'queue_job',
+      kind: kind,
+      source_event_id: sourceEventId,
+      attempt: Number(meta.attempt_count || 0),
+      latency_ms: ''
+    };
+    appendAuditLog('QUEUE_JOB_LIFECYCLE', userId || '', 'Queue', String(jobId), 'RECEIVED', lifecycleDetails);
+    appendAuditLog('QUEUE_JOB_LIFECYCLE', userId || '', 'Queue', String(jobId), 'QUEUED', lifecycleDetails);
+    return jobId;
   } finally {
     lock.releaseLock();
   }
