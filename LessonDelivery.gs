@@ -291,7 +291,35 @@ function openOnboardingModal(triggerId, row) { return openSlackModal(triggerId, 
 function updateOnboardingRowFromModal(rowIndex, submittedData) { return true; }
 function handleOnboardingButtonClick(payload) { return true; }
 function handleOnboardingModalSubmit(payload) { return true; }
-function handleSlackInteraction(payload) { return { ok: true }; }
+function handleSlackInteraction(payload) {
+  try {
+    if (!payload) return { ok: false, skipped: true };
+
+    if (payload.type === 'block_actions') {
+      var action = payload.actions && payload.actions[0];
+      if (!action) return { ok: true, skipped: true };
+
+      // Lesson completion button path is processed asynchronously in queue worker.
+      if (action.action_id === 'lesson_complete') {
+        var userId = (payload.user && payload.user.id) || '';
+        appendToQueue(userId, JSON.stringify({ kind: 'block_action', payload: payload }));
+        scheduleQueuedPipeline_();
+        return { ok: true, queued: true };
+      }
+
+      return handleOnboardingButtonClick(payload);
+    }
+
+    if (payload.type === 'view_submission') {
+      return handleOnboardingModalSubmit(payload);
+    }
+
+    return { ok: true, skipped: true };
+  } catch (err) {
+    Logger.log('handleSlackInteraction error: ' + err);
+    return { ok: false, error: String(err) };
+  }
+}
 
 function testSlackConnection() { return callSlackApi('auth.test', {}); }
 function onOpen() { SpreadsheetApp.getUi().createMenu('Slack Automation').addItem('Ensure Tracking Columns', 'menuEnsureTrackingColumns').addToUi(); }
