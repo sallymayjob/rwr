@@ -27,7 +27,7 @@ function callClaude(systemPrompt, userMessage, maxTokens, agentName) {
   return response;
 }
 
-function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
+function callGemini(systemPrompt, userMessage, maxTokens, agentName, options) {
   const model = String(PROPS.getProperty('GEMINI_MODEL') || 'gemini-1.5-flash').trim();
   const apiKey = String(PROPS.getProperty('GEMINI_API_KEY') || '').trim();
   const disabled = String(PROPS.getProperty('AI_DISABLED') || 'false').toLowerCase() === 'true';
@@ -59,6 +59,9 @@ function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
       }
     };
 
+    if (options && options.responseMimeType) payload.generationConfig.responseMimeType = options.responseMimeType;
+    if (options && options.responseSchema) payload.generationConfig.responseSchema = options.responseSchema;
+
     const res = UrlFetchApp.fetch(endpoint, {
       method: 'post',
       contentType: 'application/json',
@@ -87,14 +90,87 @@ function callGemini(systemPrompt, userMessage, maxTokens, agentName) {
   }
 }
 
-function callAI(agentName, systemPrompt, userMessage, maxTokens) {
+function callAI(agentName, systemPrompt, userMessage, maxTokens, options) {
   const provider = getProvider(agentName);
-  if (provider === 'gemini') return callGemini(systemPrompt, userMessage, maxTokens, agentName);
+  if (provider === 'gemini') return callGemini(systemPrompt, userMessage, maxTokens, agentName, options);
   if (provider === 'claude') return callClaude(systemPrompt, userMessage, maxTokens, agentName);
-  return callGemini(systemPrompt, userMessage, maxTokens, agentName);
+  return callGemini(systemPrompt, userMessage, maxTokens, agentName, options);
 }
 
 
+
+
+function getMediaAgentResponseSchema_() {
+  return {
+    type: 'OBJECT',
+    required: ['lesson_id', 'edited_content', 'change_log', 'compliance_flags'],
+    properties: {
+      lesson_id: { type: 'STRING' },
+      edited_content: { type: 'STRING' },
+      change_log: { type: 'ARRAY', items: { type: 'STRING' } },
+      rationale: { type: 'STRING' },
+      status: { type: 'STRING' },
+      compliance_flags: {
+        type: 'OBJECT',
+        required: ['media_required', 'visual_clarity', 'framework_alignment', 'slack_ready', 'people_first_voice'],
+        properties: {
+          media_required: { type: 'BOOLEAN' },
+          visual_clarity: { type: 'BOOLEAN' },
+          framework_alignment: { type: 'BOOLEAN' },
+          slack_ready: { type: 'BOOLEAN' },
+          people_first_voice: { type: 'BOOLEAN' }
+        }
+      },
+      media_brief: {
+        type: 'OBJECT',
+        nullable: true,
+        properties: {
+          asset_type: { type: 'STRING' },
+          purpose: { type: 'STRING' },
+          content: { type: 'STRING' },
+          palette: { type: 'ARRAY', items: { type: 'STRING' } },
+          design_notes: { type: 'STRING' },
+          slack_constraints: { type: 'STRING' }
+        }
+      }
+    }
+  };
+}
+
+function validateMediaAgentResponse_(parsed, expectedLessonId) {
+  const errors = [];
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) errors.push('payload_not_object');
+  if (!parsed || String(parsed.lesson_id || '').trim() === '') errors.push('missing_lesson_id');
+  if (String(parsed.lesson_id || '') !== String(expectedLessonId || '')) errors.push('lesson_id_mismatch');
+  if (!parsed || typeof parsed.edited_content !== 'string') errors.push('missing_edited_content');
+  if (!parsed || !Array.isArray(parsed.change_log)) errors.push('missing_change_log_array');
+
+  const flags = parsed && parsed.compliance_flags;
+  if (!flags || typeof flags !== 'object' || Array.isArray(flags)) {
+    errors.push('missing_compliance_flags');
+  } else {
+    ['media_required', 'visual_clarity', 'framework_alignment', 'slack_ready', 'people_first_voice'].forEach(function(key) {
+      if (typeof flags[key] !== 'boolean') errors.push('invalid_flag_' + key);
+    });
+  }
+
+  return { ok: errors.length === 0, errors: errors };
+}
+
+function computeComplianceScore(flags) {
+  const table = {
+    media_required: 20,
+    visual_clarity: 20,
+    framework_alignment: 20,
+    slack_ready: 20,
+    people_first_voice: 20
+  };
+  let score = 0;
+  Object.keys(table).forEach(function(key) {
+    if (flags && flags[key] === true) score += table[key];
+  });
+  return score;
+}
 
 function sendAutomatedMessageOnce(userId, dedupeKey, text, blocks, nextCommand) {
   try {
@@ -151,7 +227,7 @@ function getSystemPrompt(agentName) {
       'You are the RWR Group LMS mix generator assistant. You receive JSON with optional topic query and candidate ready lessons. Produce a concise Slack-formatted learning mix recommendation and short rationale under 160 words. Brand voice: confident, people-first. Do not use: leverage, synergy, transformative, staff, human resources.',
 
     media_agent:
-      'Media Agent - RWR Slack LMS. Role: Media coordinator. Assess whether a lesson needs visual support and, if needed, produce a structured creative brief. You do not create the asset. Default stance is no media unless a visual would clearly reduce confusion or speed up understanding for recruiting professionals. Recommend media only for multi-step decisions, side-by-side comparisons, data storytelling, named frameworks, spatial mappings, or before/after transformations. Do not recommend media for short conceptual lessons, single-step missions, reflection content, or visuals that duplicate text. If media is needed, output strict JSON with: lesson_id, media_required, rationale, media_brief (asset_type, purpose, content, palette, design_notes, slack_constraints), status=MEDIA_BRIEF_READY. If not needed output media_required=false, media_brief=null, status=MEDIA_COMPLETE. Use RWR design language: rounded shapes, dot motif, minimal style, Poppins, people-first imagery, and palette {#000000,#FFFFFF,#0054FF,#F58220,#E63976,#3FA535,#6A0DAD}. Slack constraints: max width 360px, PNG/JPG only, include alt text. Advisory only, never fail or block lessons.'
+      'Media Agent - RWR Slack LMS. Role: language analysis and compliance extraction coordinator. Analyze lesson text for media suitability and compliance flags only. Do not do arithmetic or score deductions in your response. Return strict JSON with required fields: lesson_id, edited_content, change_log, and compliance_flags (media_required, visual_clarity, framework_alignment, slack_ready, people_first_voice). If media is needed, include media_brief (asset_type, purpose, content, palette, design_notes, slack_constraints) and set status=MEDIA_BRIEF_READY. If not needed set media_required=false, media_brief=null, status=MEDIA_COMPLETE. Keep rationale concise and grounded in lesson language. Use RWR design language: rounded shapes, dot motif, minimal style, Poppins, people-first imagery, and palette {#000000,#FFFFFF,#0054FF,#F58220,#E63976,#3FA535,#6A0DAD}. Slack constraints: max width 360px, PNG/JPG only, include alt text. Advisory only, never fail or block lessons.'
   };
   return prompts[agentName] || prompts.general_assistant;
 }
@@ -764,32 +840,43 @@ function agentMedia(payload) {
       verification_question: lesson['Verification Question'] || ''
     };
 
-    const aiText = callAI('media_agent', getSystemPrompt('media_agent'), JSON.stringify(mediaInput), 700);
+    const aiText = callAI('media_agent', getSystemPrompt('media_agent'), JSON.stringify(mediaInput), 700, {
+      responseMimeType: 'application/json',
+      responseSchema: getMediaAgentResponseSchema_()
+    });
 
-    let mediaRequired = false;
-    let rationale = 'Media review complete.';
-    let mediaBrief = null;
-    let status = 'MEDIA_COMPLETE';
-
+    let parsed;
     try {
-      const parsed = JSON.parse(aiText);
-      mediaRequired = !!parsed.media_required;
-      rationale = parsed.rationale || rationale;
-      mediaBrief = parsed.media_brief || null;
-      status = parsed.status || (mediaRequired ? 'MEDIA_BRIEF_READY' : 'MEDIA_COMPLETE');
+      parsed = JSON.parse(aiText);
     } catch (errParse) {
-      Logger.log('agentMedia parse fallback: ' + errParse + ' | raw=' + aiText);
-      rationale = 'Media agent output was not valid JSON; no sheet changes made.';
-      return sendAutomatedMessageOnce(payload.user_id, 'media_parse_fallback', rationale + '\nRaw output:\n' + aiText, null, '/media <lessonId>');
+      Logger.log('agentMedia parse failure: ' + errParse + ' | raw=' + aiText);
+      appendErrorLog('agentMedia', 'MEDIA_SCHEMA_PARSE_FAILED', String(errParse), { lesson_id: lessonId }, true);
+      throw new Error('MEDIA_SCHEMA_PARSE_FAILED');
     }
+
+    const validation = validateMediaAgentResponse_(parsed, lessonId);
+    if (!validation.ok) {
+      appendErrorLog('agentMedia', 'MEDIA_SCHEMA_INVALID', validation.errors.join(','), { lesson_id: lessonId, response: parsed }, true);
+      throw new Error('MEDIA_SCHEMA_INVALID: ' + validation.errors.join(','));
+    }
+
+    const flags = parsed.compliance_flags;
+    const mediaRequired = !!flags.media_required;
+    const rationale = parsed.rationale || 'Media review complete.';
+    const mediaBrief = parsed.media_brief || null;
+    const status = parsed.status || (mediaRequired ? 'MEDIA_BRIEF_READY' : 'MEDIA_COMPLETE');
 
     const briefText = mediaRequired ? JSON.stringify(mediaBrief || {}, null, 2) : '';
     const updated = updateLessonMediaColumns(lessonId, mediaRequired, briefText);
     if (!updated) return postDM(payload.user_id, 'Unable to update lesson media columns for ' + lessonId);
 
+    const complianceScore = computeComplianceScore(flags);
+    upsertLessonMetricCompliance(lessonId, complianceScore, flags, payload.user_id || 'media_agent');
+
     const summary = [
       '*Media Review:* ' + lessonId,
       '*Media Required:* ' + (mediaRequired ? 'TRUE' : 'FALSE'),
+      '*Compliance Score:* ' + complianceScore,
       '*Status:* ' + status,
       '*Rationale:* ' + rationale
     ].join('\n');
@@ -797,10 +884,10 @@ function agentMedia(payload) {
     return postDM(payload.user_id, summary + (mediaRequired ? ('\n\n*Media Brief*\n```' + briefText + '```') : ''));
   } catch (err) {
     Logger.log('agentMedia error: ' + err);
-    return sendAutomatedMessageOnce(payload.user_id, 'media_failed', 'Media review failed. Please try again.', null, '/media <lessonId>');
+    appendErrorLog('agentMedia', 'MEDIA_REVIEW_FAILED', String(err), { user_id: payload.user_id || '' }, true);
+    throw err;
   }
 }
-
 
 function upsertLearnerEnrollment(userId, courseId) {
   const lock = LockService.getScriptLock();

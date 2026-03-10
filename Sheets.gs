@@ -285,6 +285,42 @@ function updateLearnerProgress(slackUserId, lessonId, missionId) {
   if (lessonRow && idxModule >= 0) data.sheet.getRange(row, idxModule + 1).setValue(lessonRow['ModuleID'] || '');
 }
 
+
+function upsertLessonMetricCompliance(lessonId, complianceScore, flags, reviewer) {
+  const data = getAllRows(SHEET_METRICS);
+  const idxLesson = data.headers.indexOf('Lesson');
+  const idxScore = data.headers.indexOf('Brand Compliance Score');
+  const idxFlags = data.headers.indexOf('PED Flags');
+  const idxReviewed = data.headers.indexOf('Last Reviewed');
+  const idxReviewer = data.headers.indexOf('Reviewer');
+
+  const lessonVal = String(lessonId || '').trim();
+  const scoreVal = Number(complianceScore || 0);
+  const flagsVal = JSON.stringify(flags || {});
+  const reviewerVal = String(reviewer || 'media_agent');
+
+  for (let i = 0; i < data.rows.length; i++) {
+    if (String(data.rows[i][idxLesson] || '').trim() !== lessonVal) continue;
+    const rowNo = i + 2;
+    if (idxScore >= 0) data.sheet.getRange(rowNo, idxScore + 1).setValue(scoreVal);
+    if (idxFlags >= 0) data.sheet.getRange(rowNo, idxFlags + 1).setValue(flagsVal);
+    if (idxReviewed >= 0) data.sheet.getRange(rowNo, idxReviewed + 1).setValue(new Date());
+    if (idxReviewer >= 0) data.sheet.getRange(rowNo, idxReviewer + 1).setValue(reviewerVal);
+    return true;
+  }
+
+  const row = data.headers.map(function(h) {
+    if (h === 'Lesson') return lessonVal;
+    if (h === 'Brand Compliance Score') return scoreVal;
+    if (h === 'PED Flags') return flagsVal;
+    if (h === 'Last Reviewed') return new Date();
+    if (h === 'Reviewer') return reviewerVal;
+    return '';
+  });
+  data.sheet.appendRow(row);
+  return true;
+}
+
 function recordLessonMetricTouch(lessonId) {
   const data = getAllRows(SHEET_METRICS);
   const idxLesson = data.headers.indexOf('Lesson');
