@@ -329,6 +329,14 @@ function processQueuedPipeline() {
         clearQueuedPipelineTriggers_();
         PROPS.deleteProperty('QUEUE_TRIGGER_NOT_BEFORE_MS');
       }
+
+      // Opportunistic queue maintenance to keep Queue scans bounded.
+      var lastPruneMs = Number(PROPS.getProperty('QUEUE_LAST_PRUNE_MS') || 0);
+      var pruneIntervalMs = Number(PROPS.getProperty('QUEUE_PRUNE_INTERVAL_MS') || (60 * 60 * 1000));
+      if ((Date.now() - lastPruneMs) >= pruneIntervalMs) {
+        pruneQueueRows_();
+        PROPS.setProperty('QUEUE_LAST_PRUNE_MS', String(Date.now()));
+      }
     } catch (cleanupErr) {
       Logger.log('processQueuedPipeline cleanup error: ' + cleanupErr);
     }

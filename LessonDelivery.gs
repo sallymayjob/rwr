@@ -31,7 +31,7 @@ function ensureLessonTrackingColumns() {
 
 function ensureOnboardingTrackingColumns() {
   const sheetName = getConfig().ONBOARDING_SHEET_NAME;
-  const required = ['Step ID','Slack Message','Posted Status','Posted At','Slack TS','Slack Channel','Error Log','Completed Status'];
+  const required = ['Step ID','Slack Message','Posted Status','Posted At','Slack TS','Slack Channel','Error Log','Completed Status','Submission JSON'];
   return { headers: ensureSheetColumnsByName_(sheetName, required) };
 }
 
@@ -277,20 +277,116 @@ function postOnboardingInternal_(row) {
   if (!channel) throw new Error('Missing onboarding channel');
   const res = postSlackMessage(channel, buildOnboardingMessage(row));
   const sheet = getOnboardingSheet(); const meta = getHeaderMap(sheet);
-  const iStatus = meta.headers.indexOf('Posted Status'); const iAt = meta.headers.indexOf('Posted At'); const iTs = meta.headers.indexOf('Slack TS');
+  const iStatus = meta.headers.indexOf('Posted Status'); const iAt = meta.headers.indexOf('Posted At'); const iTs = meta.headers.indexOf('Slack TS'); const iCh = meta.headers.indexOf('Slack Channel');
   if (iStatus>=0) sheet.getRange(row.__rowIndex, iStatus+1).setValue('Posted');
   if (iAt>=0) sheet.getRange(row.__rowIndex, iAt+1).setValue(new Date());
   if (iTs>=0) sheet.getRange(row.__rowIndex, iTs+1).setValue(res.ts || '');
+  if (iCh>=0) sheet.getRange(row.__rowIndex, iCh+1).setValue(res.channel || channel);
   return { ok: true, posted: true };
 }
 function postNextOnboardingStep() { const row = getNextOnboardingRow(); if (!row) return {ok:true,posted:false}; return postOnboardingInternal_(row); }
 function postAllOnboardingSteps(limit) { let p=0; const rows=getOnboardingRows(); for(let i=0;i<rows.length && p<Number(limit||25);i++){ if(String(rows[i]['Posted Status']||'').toLowerCase()==='posted') continue; postOnboardingInternal_(rows[i]); p++; } return {ok:true,posted:p}; }
-function postOnboardingStepByIdentifier(id) { return postNextOnboardingStep(); }
-function buildOnboardingModal(row) { return { type:'modal', title:{type:'plain_text',text:'Onboarding'}, close:{type:'plain_text',text:'Close'}, blocks:[{type:'section', text:{type:'mrkdwn', text: buildOnboardingMessage(row)}}]}; }
+function postOnboardingStepByIdentifier(id) {
+  var row = resolveOnboardingRowByIdentifier_(id, '', '');
+  if (!row) return { ok: false, posted: false, error: 'onboarding_identifier_not_found' };
+  return postOnboardingInternal_(row);
+}
+function buildOnboardingModal(row) {
+  var privateMeta = JSON.stringify({ step_id: String(row['Step ID'] || ''), row_index: Number(row.__rowIndex || 0) || 0 });
+  return {
+    type:'modal',
+    private_metadata: privateMeta,
+    title:{type:'plain_text',text:'Onboarding'},
+    close:{type:'plain_text',text:'Close'},
+    submit:{type:'plain_text',text:'Complete'},
+    blocks:[
+      {type:'section', text:{type:'mrkdwn', text: buildOnboardingMessage(row)}},
+      {
+        type:'input',
+        block_id:'completion_note',
+        optional:true,
+        label:{ type:'plain_text', text:'Notes (optional)' },
+        element:{ type:'plain_text_input', action_id:'note' }
+      }
+    ]
+  };
+}
 function openOnboardingModal(triggerId, row) { return openSlackModal(triggerId, buildOnboardingModal(row)); }
-function updateOnboardingRowFromModal(rowIndex, submittedData) { return true; }
-function handleOnboardingButtonClick(payload) { return true; }
-function handleOnboardingModalSubmit(payload) { return true; }
+function resolveOnboardingRowByIdentifier_(identifier, channel, ts) {
+  var id = String(identifier || '').trim();
+  var rows = getOnboardingRows();
+  for (var i = 0; i < rows.length; i++) {
+    if (id && String(rows[i]['Step ID'] || '') === id) return rows[i];
+    if (channel && ts && String(rows[i]['Slack Channel'] || '') === String(channel) && String(rows[i]['Slack TS'] || '') === String(ts)) return rows[i];
+  }
+  return null;
+}
+
+function updateOnboardingRowFromModal(rowIndex, submittedData) {
+  var sheet = getOnboardingSheet();
+  if (!sheet || !rowIndex) return false;
+  var meta = getHeaderMap(sheet);
+  var iCompleted = meta.headers.indexOf('Completed Status');
+  var iError = meta.headers.indexOf('Error Log');
+  var iPostedAt = meta.headers.indexOf('Posted At');
+  var iPostedStatus = meta.headers.indexOf('Posted Status');
+  var iSubmission = meta.headers.indexOf('Submission JSON');
+
+  if (iCompleted >= 0) sheet.getRange(rowIndex, iCompleted + 1).setValue('Completed');
+  if (iPostedStatus >= 0) sheet.getRange(rowIndex, iPostedStatus + 1).setValue('Posted');
+  if (iPostedAt >= 0) sheet.getRange(rowIndex, iPostedAt + 1).setValue(new Date());
+  if (iError >= 0) sheet.getRange(rowIndex, iError + 1).setValue('');
+  if (iSubmission >= 0) sheet.getRange(rowIndex, iSubmission + 1).setValue(JSON.stringify(submittedData || {}));
+  return true;
+}
+
+function handleOnboardingButtonClick(payload) {
+  var action = payload && payload.actions && payload.actions[0];
+  if (!action) return { ok: true, skipped: true };
+
+  var stepId = String(action.value || '').trim();
+  var channel = payload && payload.container && payload.container.channel_id;
+  var ts = payload && payload.container && payload.container.message_ts;
+  var row = resolveOnboardingRowByIdentifier_(stepId, channel, ts);
+  if (!row) return { ok: false, error: 'onboarding_row_not_found' };
+
+  var actionId = String(action.action_id || '').toLowerCase();
+  if (actionId.indexOf('modal') !== -1 && payload.trigger_id) {
+    return openOnboardingModal(payload.trigger_id, row);
+  }
+
+  if (actionId.indexOf('complete') !== -1 || actionId.indexOf('done') !== -1 || !actionId) {
+    updateOnboardingRowFromModal(row.__rowIndex, { source: 'button', action_id: actionId, user_id: (payload.user && payload.user.id) || '' });
+    return { ok: true, completed: true };
+  }
+
+  return { ok: true, skipped: true };
+}
+
+function handleOnboardingModalSubmit(payload) {
+  var md = {};
+  try { md = JSON.parse((payload && payload.view && payload.view.private_metadata) || '{}'); } catch (ignore) { md = {}; }
+  var rowIndex = Number(md.row_index || 0);
+  var values = (((payload || {}).view || {}).state || {}).values || {};
+  var out = { source: 'modal', user_id: (payload.user && payload.user.id) || '' };
+  Object.keys(values).forEach(function(blockId) {
+    var block = values[blockId] || {};
+    Object.keys(block).forEach(function(actionId) {
+      var item = block[actionId] || {};
+      if (item.value != null) out[actionId] = item.value;
+      else if (item.selected_option && item.selected_option.value != null) out[actionId] = item.selected_option.value;
+    });
+  });
+
+  if (!rowIndex && md.step_id) {
+    var row = resolveOnboardingRowByIdentifier_(md.step_id, '', '');
+    rowIndex = row ? row.__rowIndex : 0;
+  }
+  if (!rowIndex) return { ok: false, error: 'onboarding_modal_row_not_found' };
+
+  updateOnboardingRowFromModal(rowIndex, out);
+  return { ok: true, completed: true };
+}
 function handleSlackInteraction(payload) {
   try {
     if (!payload) return { ok: false, skipped: true };
@@ -332,9 +428,27 @@ function menuPostAllOnboardingSteps() { postAllOnboardingSteps(); }
 function menuPostOnboardingByIdentifier() {}
 function menuTestSlackConnection() { testSlackConnection(); }
 function menuEnsureCurriculumDatabaseColumns() { ensureCurriculumDatabaseColumns(); }
-function reopenOnboardingStepModal(identifier) {}
-function resetOnboardingPostedStatus(identifier) {}
-function resolveOnboardingRowByIdentifier_(id) { return null; }
+function reopenOnboardingStepModal(identifier) {
+  var row = resolveOnboardingRowByIdentifier_(identifier, '', '');
+  if (!row) throw new Error('Onboarding row not found for identifier: ' + identifier);
+  return { ok: true, requires_trigger: true, message: 'Use a button/shortcut trigger_id to open modal for this step.' };
+}
+function resetOnboardingPostedStatus(identifier) {
+  var row = resolveOnboardingRowByIdentifier_(identifier, '', '');
+  if (!row) throw new Error('Onboarding row not found for identifier: ' + identifier);
+  var sheet = getOnboardingSheet();
+  var meta = getHeaderMap(sheet);
+  var iStatus = meta.headers.indexOf('Posted Status');
+  var iTs = meta.headers.indexOf('Slack TS');
+  var iAt = meta.headers.indexOf('Posted At');
+  var iCompleted = meta.headers.indexOf('Completed Status');
+  if (iStatus >= 0) sheet.getRange(row.__rowIndex, iStatus + 1).setValue('');
+  if (iTs >= 0) sheet.getRange(row.__rowIndex, iTs + 1).setValue('');
+  if (iAt >= 0) sheet.getRange(row.__rowIndex, iAt + 1).setValue('');
+  if (iCompleted >= 0) sheet.getRange(row.__rowIndex, iCompleted + 1).setValue('');
+  return { ok: true, reset: true };
+}
+function resolveOnboardingRowByIdentifierForMenu_(id) { return resolveOnboardingRowByIdentifier_(id, '', ''); }
 function menuGenerateStepIds() { generateStepIdsIfMissing(); }
 function menuReopenOnboardingModal() {}
 function menuResetOnboardingPostedStatus() {}

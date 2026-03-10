@@ -292,8 +292,59 @@ function recordLessonMetricTouch(lessonId) {
 }
 
 function appendToQueue(userId, payloadJson) {
-  const sheet = ensureQueueSheet();
-  sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING', 0, '']);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new Error('Queue lock unavailable for append');
+  try {
+    const sheet = ensureQueueSheet();
+    sheet.appendRow([new Date(), userId || '', payloadJson, 'PENDING', 0, '']);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function pruneQueueRows_() {
+  try {
+    const retentionDays = Number(PROPS.getProperty('QUEUE_RETENTION_DAYS') || 7);
+    const maxRows = Number(PROPS.getProperty('QUEUE_MAX_ROWS') || 5000);
+    const now = Date.now();
+
+    const data = getAllRows(SHEET_QUEUE);
+    const headers = data.headers;
+    const idxCreated = headers.indexOf('Created');
+    const idxStatus = headers.indexOf('Status');
+    if (idxCreated < 0 || idxStatus < 0) return { ok: false, skipped: true };
+
+    const deleteRows = [];
+    for (let i = 0; i < data.rows.length; i++) {
+      const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+      if (status !== 'DONE' && status !== 'DEAD') continue;
+      const created = new Date(data.rows[i][idxCreated]).getTime();
+      if (!created) continue;
+      const ageDays = (now - created) / (24 * 60 * 60 * 1000);
+      if (ageDays >= retentionDays) deleteRows.push(i + 2);
+    }
+
+    // Hard cap trim when queue grows too large (oldest terminal rows first).
+    const totalRows = data.rows.length;
+    if (totalRows - deleteRows.length > maxRows) {
+      for (let i = 0; i < data.rows.length && (totalRows - deleteRows.length) > maxRows; i++) {
+        const status = String(data.rows[i][idxStatus] || '').trim().toUpperCase();
+        if (status === 'DONE' || status === 'DEAD') {
+          const rowNo = i + 2;
+          if (deleteRows.indexOf(rowNo) === -1) deleteRows.push(rowNo);
+        }
+      }
+    }
+
+    if (!deleteRows.length) return { ok: true, deleted: 0 };
+
+    deleteRows.sort(function(a, b) { return b - a; });
+    deleteRows.forEach(function(rowNo) { data.sheet.deleteRow(rowNo); });
+    return { ok: true, deleted: deleteRows.length };
+  } catch (err) {
+    Logger.log('pruneQueueRows_ error: ' + err);
+    return { ok: false, error: String(err) };
+  }
 }
 
 function updateLessonMediaColumns(lessonId, mediaRequired, mediaBriefText) {

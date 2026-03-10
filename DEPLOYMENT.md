@@ -24,6 +24,10 @@ Recommended:
 - `DEFAULT_LESSON_CHANNEL`
 - `DEFAULT_ONBOARDING_CHANNEL`
 - `ONBOARDING_SHEET_NAME`
+- `QUEUE_MAX_RETRIES` (default `3`)
+- `QUEUE_RETENTION_DAYS` (default `7`)
+- `QUEUE_MAX_ROWS` (default `5000`)
+- `QUEUE_PRUNE_INTERVAL_MS` (default `3600000`)
 
 ## 3) Slack app
 
