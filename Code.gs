@@ -6,6 +6,7 @@ function doPost(e) {
   }
 
   const rawBody = e.postData.contents || '';
+  const retryMeta = getSlackRetryMetadata_(e);
 
   // Step 1 - attempt JSON parse (events and block_actions arrive as JSON)
   let body = {};
@@ -32,7 +33,12 @@ function doPost(e) {
 
   // Step 3b - coarse request-level idempotency for Slack retries/replays.
   if (isDuplicateSlackRequest_(rawBody, e)) {
+    logSlackDedupeAudit_('request', 'HIT', { dedupe_key: 'request_signature', retry: retryMeta });
     return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+  }
+  logSlackDedupeAudit_('request', 'MISS', { dedupe_key: 'request_signature', retry: retryMeta });
+  if (retryMeta.is_retry) {
+    Logger.log('Slack retry metadata observed: ' + JSON.stringify(retryMeta));
   }
 
   // Step 4 - for slash commands, body is form-encoded - read from e.parameter
@@ -72,6 +78,10 @@ function doPost(e) {
   }
 
   if (interactionPayload) {
+    if (shouldShortCircuitSlackDedupe_({ body: body, interactionPayload: interactionPayload, retryMeta: retryMeta })) {
+      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+
     handleSlackInteraction(interactionPayload);
     if (interactionPayload.type === 'view_submission') {
       return ContentService
@@ -85,6 +95,10 @@ function doPost(e) {
 
   // Step 5b - block_actions arriving as JSON
   if (body.type === 'block_actions' || body.type === 'view_submission') {
+    if (shouldShortCircuitSlackDedupe_({ body: body, interactionPayload: body, retryMeta: retryMeta })) {
+      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+
     handleSlackInteraction(body);
     return ContentService
       .createTextOutput('')
@@ -94,6 +108,10 @@ function doPost(e) {
   // Step 6a - workflow builder enrollment webhook trigger
   const workflowPayload = extractWorkflowEnrollPayload(body, e.parameter || {});
   if (workflowPayload) {
+    if (shouldShortCircuitSlackDedupe_({ body: body, workflowPayload: workflowPayload, retryMeta: retryMeta })) {
+      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+
     appendToQueue(workflowPayload.user_id, JSON.stringify({ kind: 'workflow_enroll', payload: workflowPayload }));
     scheduleQueuedPipeline_();
     return ContentService
@@ -103,7 +121,7 @@ function doPost(e) {
 
   // Step 6 - event_callback (app_mention, message.im, reaction_added)
   if (body.type === 'event_callback') {
-    if (isDuplicateSlackEventId_(body.event_id)) {
+    if (shouldShortCircuitSlackDedupe_({ body: body, retryMeta: retryMeta })) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
     }
 
@@ -122,6 +140,67 @@ function doPost(e) {
   return ContentService
     .createTextOutput(JSON.stringify({ ok: true }))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+
+function buildSlackDedupeKeyCandidates_(opts) {
+  opts = opts || {};
+  var body = opts.body || {};
+  var interactionPayload = opts.interactionPayload || null;
+  var workflowPayload = opts.workflowPayload || null;
+  var keys = [];
+
+  if (body && body.event_id) keys.push('event_id:' + String(body.event_id));
+
+  var interaction = interactionPayload || body;
+  if (interaction && typeof interaction === 'object') {
+    if (interaction.trigger_id) keys.push('trigger_id:' + String(interaction.trigger_id));
+    var containerTs = interaction.container && interaction.container.message_ts;
+    if (containerTs) {
+      var channel = (interaction.channel && interaction.channel.id) || (interaction.container && interaction.container.channel_id) || '';
+      keys.push('interaction_msg:' + String(channel) + '|' + String(containerTs));
+    }
+  }
+
+  if (workflowPayload && workflowPayload.user_id && workflowPayload.trigger_type) {
+    keys.push('workflow:' + String(workflowPayload.trigger_type) + '|' + String(workflowPayload.user_id));
+  }
+
+  return keys.filter(function(k, idx, arr) { return k && arr.indexOf(k) === idx; });
+}
+
+function logSlackDedupeAudit_(entityId, outcome, details) {
+  appendAuditLog('SLACK_DEDUPE', '', 'SlackWebhook', String(entityId || ''), String(outcome || ''), details || {});
+}
+
+function shouldShortCircuitSlackDedupe_(opts) {
+  var keys = buildSlackDedupeKeyCandidates_(opts || {});
+  var retryMeta = opts && opts.retryMeta || {};
+  if (!keys.length) return false;
+
+  var ttlSeconds = getSlackDedupeTtlSeconds_();
+  for (var i = 0; i < keys.length; i++) {
+    var dedupe = checkAndStoreDedupeKey_(keys[i], ttlSeconds, { retry: retryMeta });
+    logSlackDedupeAudit_(keys[i], dedupe.duplicate ? 'HIT' : 'MISS', {
+      dedupe_key: keys[i],
+      ttl_seconds: ttlSeconds,
+      retry_num: retryMeta.retry_num || '',
+      retry_reason: retryMeta.retry_reason || '',
+      is_retry: retryMeta.is_retry ? 'TRUE' : 'FALSE',
+      lock_busy: dedupe.lockBusy ? 'TRUE' : 'FALSE'
+    });
+
+    if (dedupe.duplicate) {
+      Logger.log('Slack dedupe hit key=' + keys[i] + ' retry=' + JSON.stringify(retryMeta));
+      return true;
+    }
+  }
+
+  if (retryMeta.is_retry) {
+    Logger.log('Slack retry metadata observed (no dedupe hit): ' + JSON.stringify(retryMeta));
+  }
+  return false;
 }
 
 

@@ -51,6 +51,93 @@ function markSlackRequestSeen_(key, ttlSeconds) {
   }
 }
 
+function getSlackDedupeTtlSeconds_() {
+  var ttl = Number(PROPS.getProperty('SLACK_DEDUPE_TTL_SECONDS') || 1200);
+  if (!ttl || ttl < 60) ttl = 600;
+  if (ttl > 1800) ttl = 1800;
+  return ttl;
+}
+
+function cleanupExpiredSlackDedupeKeys_() {
+  try {
+    var now = Date.now();
+    var lastCleanup = Number(PROPS.getProperty('SLACK_DEDUPE_LAST_CLEANUP_MS') || 0);
+    if (lastCleanup && (now - lastCleanup) < 5 * 60 * 1000) return;
+
+    var all = PROPS.getProperties();
+    var toDelete = [];
+    Object.keys(all).forEach(function(k) {
+      if (k.indexOf('SLACK_DEDUPE_') !== 0) return;
+      var raw = all[k];
+      try {
+        var parsed = JSON.parse(raw || '{}');
+        if (!parsed.expiresAtMs || Number(parsed.expiresAtMs) <= now) {
+          toDelete.push(k);
+        }
+      } catch (parseErr) {
+        toDelete.push(k);
+      }
+    });
+
+    if (toDelete.length) PROPS.deleteAllProperties(toDelete);
+    PROPS.setProperty('SLACK_DEDUPE_LAST_CLEANUP_MS', String(now));
+  } catch (err) {
+    Logger.log('cleanupExpiredSlackDedupeKeys_ error: ' + err);
+  }
+}
+
+function checkAndStoreDedupeKey_(dedupeKey, ttlSeconds, metadata) {
+  var normalized = String(dedupeKey || '').trim();
+  if (!normalized) return { duplicate: false, key: '' };
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(1500)) {
+    Logger.log('checkAndStoreDedupeKey_: lock busy, continuing without dedupe enforcement.');
+    return { duplicate: false, key: normalized, lockBusy: true };
+  }
+
+  try {
+    cleanupExpiredSlackDedupeKeys_();
+    var now = Date.now();
+    var ttlMs = Number(ttlSeconds || getSlackDedupeTtlSeconds_()) * 1000;
+    var propKey = 'SLACK_DEDUPE_' + Utilities.base64EncodeWebSafe(normalized).replace(/=+$/,'');
+    var existing = PROPS.getProperty(propKey);
+
+    if (existing) {
+      try {
+        var parsed = JSON.parse(existing);
+        if (Number(parsed.expiresAtMs || 0) > now) {
+          return { duplicate: true, key: normalized, expiresAtMs: Number(parsed.expiresAtMs) };
+        }
+      } catch (ignore) {
+        // Overwrite malformed values below.
+      }
+    }
+
+    PROPS.setProperty(propKey, JSON.stringify({
+      createdAtMs: now,
+      expiresAtMs: now + ttlMs,
+      meta: metadata || {}
+    }));
+    return { duplicate: false, key: normalized, expiresAtMs: now + ttlMs };
+  } catch (err) {
+    Logger.log('checkAndStoreDedupeKey_ error: ' + err);
+    return { duplicate: false, key: normalized, error: String(err) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getSlackRetryMetadata_(e) {
+  var retryNum = getHeaderValue(e, ['X-Slack-Retry-Num', 'x-slack-retry-num']);
+  var retryReason = getHeaderValue(e, ['X-Slack-Retry-Reason', 'x-slack-retry-reason']);
+  return {
+    retry_num: retryNum === '' ? '' : String(retryNum),
+    retry_reason: String(retryReason || ''),
+    is_retry: retryNum !== '' || String(retryReason || '') !== ''
+  };
+}
+
 function isDuplicateSlackRequest_(rawBody, e) {
   var ts = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']) || '';
   var sig = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']) || '';
