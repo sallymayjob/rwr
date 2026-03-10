@@ -1,4 +1,18 @@
 function doPost(e) {
+  // Parse the incoming JSON request from Slack
+  var payload = null;
+  try {
+    payload = JSON.parse(e.postData.getDataAsString());
+  } catch (ignore) {
+    payload = null;
+  }
+
+  // Check if Slack is sending a url_verification challenge
+  if (payload && payload.type === 'url_verification' && payload.challenge) {
+    // Return the challenge string directly to Slack
+    return ContentService.createTextOutput(payload.challenge);
+  }
+
   if (!e || !e.postData) {
     return ContentService
       .createTextOutput(JSON.stringify({ error: 'Missing postData. Trigger doPost via HTTP POST, not editor Run.' }))
