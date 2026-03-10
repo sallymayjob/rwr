@@ -1,25 +1,12 @@
 function slackFetch(endpoint, payload) {
-  try {
-    const token = PROPS.getProperty('SLACK_BOT_TOKEN');
-    const res = UrlFetchApp.fetch(SLACK_API_BASE + endpoint, {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { Authorization: 'Bearer ' + token },
-      payload: JSON.stringify(payload || {}),
-      muteHttpExceptions: true
-    });
-
-    if (res.getResponseCode() !== 200) {
-      Logger.log('Slack HTTP error ' + endpoint + ': ' + res.getContentText());
-      return { ok: false, error: 'http_' + res.getResponseCode() };
-    }
-    const data = JSON.parse(res.getContentText());
-    if (!data.ok) Logger.log('Slack API error ' + endpoint + ': ' + res.getContentText());
-    return data;
-  } catch (err) {
-    Logger.log('slackFetch exception ' + endpoint + ': ' + err);
-    return { ok: false, error: String(err) };
-  }
+  var result = slackApiCall(endpoint, payload || {});
+  if (result.ok) return result.data;
+  return {
+    ok: false,
+    error: result.error || 'slack_api_failed',
+    status: result.status || 0,
+    retriable: !!result.retriable
+  };
 }
 
 
@@ -189,15 +176,15 @@ function resolveSlackUserId(query) {
 
   try {
     do {
-      var url = SLACK_API_BASE + 'users.list?limit=200' + (cursor ? ('&cursor=' + encodeURIComponent(cursor)) : '');
-      var res = UrlFetchApp.fetch(url, {
-        method: 'get',
-        headers: { Authorization: 'Bearer ' + token },
-        muteHttpExceptions: true
+      var usersList = slackApiCall('users.list', {
+        limit: 200,
+        cursor: cursor
+      }, {
+        token: token,
+        httpMethod: 'get'
       });
-      if (res.getResponseCode() !== 200) break;
-      var data = JSON.parse(res.getContentText());
-      if (!data.ok || !data.members) break;
+      if (!usersList.ok || !usersList.data || !usersList.data.members) break;
+      var data = usersList.data;
 
       for (var i = 0; i < data.members.length; i++) {
         var m = data.members[i];
