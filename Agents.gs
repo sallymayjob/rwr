@@ -557,23 +557,19 @@ function getSlackScopeDiagnostics_() {
   }
 
   try {
-    const response = UrlFetchApp.fetch('https://slack.com/api/auth.test', {
-      method: 'post',
-      headers: { Authorization: 'Bearer ' + token },
-      muteHttpExceptions: true
-    });
+    const authResult = slackApiCall('auth.test', {}, { token: token });
 
-    if (response.getResponseCode() !== 200) {
+    if (!authResult.ok) {
       return {
         ok: false,
         requiredScopes: requiredScopes,
         configuredScopes: [],
         missingScopes: requiredScopes.slice(),
-        detail: 'auth.test HTTP ' + response.getResponseCode()
+        detail: 'auth.test error: ' + String(authResult.error || authResult.status || 'unknown_error')
       };
     }
 
-    const data = JSON.parse(response.getContentText() || '{}');
+    const data = authResult.data || {};
     if (!data.ok) {
       return {
         ok: false,

@@ -155,26 +155,21 @@ function markRowError(sheet, headers, rowIndex, errorMessage) {
   if (idx >= 0) sheet.getRange(rowIndex, idx + 1).setValue(String(errorMessage || ''));
 }
 
-function callSlackApi(method, payload) {
-  const cfg = getConfig();
-  if (!cfg.SLACK_BOT_TOKEN) throw new Error('Missing SLACK_BOT_TOKEN in Script Properties.');
-  if (cfg.DRY_RUN) return { ok: true, ts: 'dryrun-' + Date.now(), channel: payload.channel || '' };
-  const response = UrlFetchApp.fetch(SLACK_API_BASE + method, {
-    method: 'post', contentType: 'application/json; charset=utf-8',
-    headers: { Authorization: 'Bearer ' + cfg.SLACK_BOT_TOKEN },
-    payload: JSON.stringify(payload || {}), muteHttpExceptions: true
-  });
-  const status = response.getResponseCode();
-  const body = JSON.parse(response.getContentText() || '{}');
-  if (status >= 300 || !body.ok) throw new Error('Slack API ' + method + ' failed: ' + (body.error || status));
-  return body;
-}
-
 function postSlackMessage(channel, text) {
-  return callSlackApi('chat.postMessage', { channel: channel, text: text || '' });
+  const cfg = getConfig();
+  if (cfg.DRY_RUN) return { ok: true, ts: 'dryrun-' + Date.now(), channel: channel || '' };
+  var result = slackApiCall('chat.postMessage', { channel: channel, text: text || '' });
+  if (!result.ok) throw new Error('Slack API chat.postMessage failed: ' + (result.error || result.status));
+  return result.data;
 }
 
-function openSlackModal(triggerId, view) { return callSlackApi('views.open', { trigger_id: triggerId, view: view }); }
+function openSlackModal(triggerId, view) {
+  const cfg = getConfig();
+  if (cfg.DRY_RUN) return { ok: true };
+  var result = slackApiCall('views.open', { trigger_id: triggerId, view: view });
+  if (!result.ok) throw new Error('Slack API views.open failed: ' + (result.error || result.status));
+  return result.data;
+}
 
 function postLessonInternal_(row, targetChannel, learnerId) {
   const lessonId = String(row['LessonID'] || '').trim();
@@ -495,6 +490,8 @@ function routeSlackShortcut_(payload) {
 }
 
 function handleSlackInteraction(payload) {
+  var corr = String((payload && payload.trigger_id) || (payload && payload.container && payload.container.message_ts) || '').trim();
+  setSlackCallContext('interaction:' + String(payload && payload.type || ''), corr);
   try {
     if (!payload) return { ok: false, skipped: true };
 
@@ -507,10 +504,12 @@ function handleSlackInteraction(payload) {
   } catch (err) {
     Logger.log('handleSlackInteraction error: ' + err);
     return { ok: false, error: String(err) };
+  } finally {
+    clearSlackCallContext();
   }
 }
 
-function testSlackConnection() { return callSlackApi('auth.test', {}); }
+function testSlackConnection() { var result = slackApiCall('auth.test', {}); return result.ok ? result.data : result; }
 function onOpen() { SpreadsheetApp.getUi().createMenu('Slack Automation').addItem('Ensure Tracking Columns', 'menuEnsureTrackingColumns').addToUi(); }
 function menuEnsureTrackingColumns() { ensureTrackingColumns(); }
 function menuPostNextLesson() { postNextLesson(); }

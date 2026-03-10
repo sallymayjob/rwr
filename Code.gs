@@ -657,10 +657,14 @@ function commandRequiresSchemaWriteGuard_(command, text) {
 }
 
 function routeCommand(payload) {
-  if (commandRequiresSchemaWriteGuard_(payload.command, payload.text)) {
-    assertSchemaValidForWrite_('command ' + payload.command);
-  }
-  switch (payload.command) {
+  var commandName = String(payload && payload.command || '').trim();
+  var commandCorr = String((payload && payload.trigger_id) || (payload && payload.response_url) || (payload && payload.user_id) || '').trim();
+  setSlackCallContext('command:' + commandName, commandCorr);
+  try {
+    if (commandRequiresSchemaWriteGuard_(payload.command, payload.text)) {
+      assertSchemaValidForWrite_('command ' + payload.command);
+    }
+    switch (payload.command) {
     case '/learn': return agentTutor(payload);
     case '/submit': return agentQuizMaster(payload);
     case '/progress': return agentProgress(payload);
@@ -684,18 +688,25 @@ function routeCommand(payload) {
     case '/startlesson': return adminOnly(payload, function() { return agentStartLesson(payload); });
     case '/stoplesson': return adminOnly(payload, function() { return agentStopLesson(payload); });
     default: return postDM(payload.user_id, 'Unknown command.');
+    }
+  } finally {
+    clearSlackCallContext();
   }
 }
 
 function routeEvent(event) {
   if (!event) return;
 
-  // Prevent bot/self-message loops from message.im subscriptions.
-  if (event.bot_id || event.subtype === 'bot_message' || event.subtype === 'message_changed') {
-    return;
-  }
+  var eventType = String(event.type || '').trim();
+  var eventCorr = String(event.event_ts || event.client_msg_id || event.ts || '').trim();
+  setSlackCallContext('event:' + eventType, eventCorr);
+  try {
+    // Prevent bot/self-message loops from message.im subscriptions.
+    if (event.bot_id || event.subtype === 'bot_message' || event.subtype === 'message_changed') {
+      return;
+    }
 
-  switch (event.type) {
+    switch (event.type) {
     case 'app_mention':
       return handleMention(event);
     case 'message':
@@ -706,6 +717,9 @@ function routeEvent(event) {
       return;
     default:
       return;
+    }
+  } finally {
+    clearSlackCallContext();
   }
 }
 
