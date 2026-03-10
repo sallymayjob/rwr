@@ -54,7 +54,7 @@ function validateRequiredSchema() {
     { name: SHEET_LEARNERS, cols: ['UserID', 'Enrolled Course', 'Current Module', 'Progress (%)'] },
     { name: SHEET_SUBMISSIONS, cols: ['Timestamp', 'Learner', 'Lesson', 'MissionID', 'Submit Code', 'Score'] },
     { name: SHEET_QUEUE, cols: ['Created', 'User_Id', 'Payload_Json', 'Status', 'Retry_Count', 'Last_Error'] },
-    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome'] },
+    { name: 'Audit_Log', cols: ['Timestamp', 'Action', 'Actor_UserID', 'Entity_Type', 'Entity_ID', 'Outcome', 'Details_JSON'] },
     { name: 'Error_Log', cols: ['Timestamp', 'Source', 'Error_Class', 'Message', 'Retryable', 'Resolved_Status'] },
     { name: 'Admin_Actions', cols: ['Timestamp', 'Admin_UserID', 'Command', 'Outcome'] },
     { name: 'Content_Pipeline', cols: ['PipelineID', 'LessonID', 'Stage', 'Status'] },
