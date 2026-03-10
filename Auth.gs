@@ -1,34 +1,43 @@
 function validateSlackRequest(e) {
   try {
-    if (!e || !e.postData || typeof e.postData.contents !== 'string') return false;
-    const rawBody = e.postData.contents;
-    const signingSecret = PROPS.getProperty('SLACK_SIGNING_SECRET') || '';
+    if (!e || !e.postData) return false;
+    const rawBody = e.postData.contents || e.postData.getDataAsString() || '';
+    const signingSecret = String(PROPS.getProperty('SLACK_SIGNING_SECRET') || '').trim();
 
     const timestamp = getHeaderValue(e, ['X-Slack-Request-Timestamp', 'x-slack-request-timestamp']);
     const slackSignature = getHeaderValue(e, ['X-Slack-Signature', 'x-slack-signature']);
 
-    if (!timestamp || !slackSignature || !signingSecret) {
-      Logger.log('validateSlackRequest rejected: missing signature headers or signing secret.');
-      return false;
+    // Primary path: Slack signing-secret HMAC validation.
+    if (timestamp && slackSignature && signingSecret) {
+      const tsNum = Number(String(timestamp || '').trim());
+      const now = Math.floor(Date.now() / 1000);
+      if (!tsNum || Math.abs(now - tsNum) > 300) {
+        Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
+        return false;
+      }
+
+      const baseString = 'v0:' + timestamp + ':' + rawBody;
+      const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
+      const hex = bytes.map(function(b) {
+        const v = (b < 0 ? b + 256 : b).toString(16);
+        return v.length === 1 ? '0' + v : v;
+      }).join('');
+      const expected = 'v0=' + hex;
+      const actual = String(slackSignature || '').trim().toLowerCase();
+      const valid = constantTimeEqual(expected, actual);
+      if (valid) return true;
+      Logger.log('validateSlackRequest HMAC mismatch; checking legacy token fallback (if enabled).');
+    } else {
+      Logger.log('validateSlackRequest missing signature headers/secret; checking legacy token fallback (if enabled).');
     }
 
-    const tsNum = Number(timestamp);
-    const now = Math.floor(Date.now() / 1000);
-    if (!tsNum || Math.abs(now - tsNum) > 300) {
-      Logger.log('validateSlackRequest rejected: stale or invalid timestamp.');
-      return false;
+    // Emergency path: deprecated legacy token fallback, explicitly gated by property.
+    if (isSlackTokenFallbackEnabled_() && validateLegacySlackToken_(e, rawBody)) {
+      Logger.log('validateSlackRequest accepted via deprecated SLACK_VERIFICATION_TOKEN fallback.');
+      return true;
     }
 
-    const baseString = 'v0:' + timestamp + ':' + rawBody;
-    const bytes = Utilities.computeHmacSha256Signature(baseString, signingSecret);
-    const hex = bytes.map(function(b) {
-      const v = (b < 0 ? b + 256 : b).toString(16);
-      return v.length === 1 ? '0' + v : v;
-    }).join('');
-    const expected = 'v0=' + hex;
-    const valid = constantTimeEqual(expected, String(slackSignature || '').trim());
-    if (!valid) Logger.log('validateSlackRequest rejected: signature mismatch.');
-    return valid;
+    return false;
   } catch (err) {
     Logger.log('validateSlackRequest error: ' + err);
     return false;
@@ -36,7 +45,55 @@ function validateSlackRequest(e) {
 }
 
 function isSlackTokenFallbackEnabled_() {
-  return false;
+  var raw = String(PROPS.getProperty('SLACK_AUTH_TOKEN_FALLBACK') || '').toLowerCase().trim();
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+function validateLegacySlackToken_(e, rawBody) {
+  var configured = String(PROPS.getProperty('SLACK_VERIFICATION_TOKEN') || '').trim();
+  if (!configured) return false;
+
+  var incoming = extractLegacySlackTokenFromRequest_(e, rawBody);
+  if (!incoming) return false;
+
+  return constantTimeEqual(String(configured), String(incoming));
+}
+
+function extractLegacySlackTokenFromRequest_(e, rawBody) {
+  try {
+    if (e && e.parameter && e.parameter.token) {
+      return String(e.parameter.token).trim();
+    }
+
+    if (e && e.parameter && e.parameter.payload) {
+      try {
+        var payload = JSON.parse(e.parameter.payload);
+        if (payload && payload.token) return String(payload.token).trim();
+      } catch (ignore) {}
+    }
+
+    var text = String(rawBody || '').trim();
+    if (!text) return '';
+
+    if (text[0] === '{') {
+      try {
+        var body = JSON.parse(text);
+        if (body && body.token) return String(body.token).trim();
+      } catch (ignoreJson) {}
+      return '';
+    }
+
+    var parts = text.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].split('=');
+      if (decodeURIComponent(String(kv[0] || '')) === 'token') {
+        return decodeURIComponent(String(kv.slice(1).join('=') || '').replace(/\+/g, '%20')).trim();
+      }
+    }
+  } catch (err) {
+    Logger.log('extractLegacySlackTokenFromRequest_ error: ' + err);
+  }
+  return '';
 }
 
 function markSlackRequestSeen_(key, ttlSeconds) {
@@ -153,6 +210,8 @@ function isDuplicateSlackEventId_(eventId) {
 
 function getHeaderValue(e, keys) {
   const variants = [];
+  const safeEvent = e || {};
+  const keyList = Array.isArray(keys) ? keys : (keys ? [keys] : []);
 
   function addVariant(value) {
     const key = String(value || '').trim();
@@ -182,22 +241,22 @@ function getHeaderValue(e, keys) {
     return value || '';
   }
 
-  keys.forEach(addKeyVariants);
+  keyList.forEach(addKeyVariants);
 
   // Web Apps can expose headers under e.headers with provider-specific naming/casing.
-  if (e.headers) {
+  if (safeEvent.headers) {
     for (let i = 0; i < variants.length; i++) {
       const key = variants[i];
-      if (Object.prototype.hasOwnProperty.call(e.headers, key)) {
-        const value = coerceHeaderValue(e.headers[key]);
+      if (Object.prototype.hasOwnProperty.call(safeEvent.headers, key)) {
+        const value = coerceHeaderValue(safeEvent.headers[key]);
         if (value) return String(value).trim();
       }
     }
 
     // Final fallback: case-insensitive lookup across all generated variants.
     const normalized = {};
-    Object.keys(e.headers).forEach(function(k) {
-      normalized[String(k || '').toLowerCase()] = e.headers[k];
+    Object.keys(safeEvent.headers).forEach(function(k) {
+      normalized[String(k || '').toLowerCase()] = safeEvent.headers[k];
     });
 
     for (let i = 0; i < variants.length; i++) {
@@ -208,8 +267,8 @@ function getHeaderValue(e, keys) {
 
   for (let i = 0; i < variants.length; i++) {
     const key = variants[i];
-    if (e.parameter && e.parameter[key]) return String(e.parameter[key]).trim();
-    if (e.parameters && e.parameters[key] && e.parameters[key][0]) return String(e.parameters[key][0]).trim();
+    if (safeEvent.parameter && safeEvent.parameter[key]) return String(safeEvent.parameter[key]).trim();
+    if (safeEvent.parameters && safeEvent.parameters[key] && safeEvent.parameters[key][0]) return String(safeEvent.parameters[key][0]).trim();
   }
 
   return '';
