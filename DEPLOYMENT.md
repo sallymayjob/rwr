@@ -1,66 +1,151 @@
-# Deployment
+# Deployment (Beginner-Friendly)
 
-## 1) Google Sheets
+This guide is written for people with little or no technical background.
 
-Create/verify sheets:
+Follow the steps in order.
 
-`Courses`, `Modules`, `Course_Module_Map`, `Lessons`, `Missions`, `Lesson_Metrics`, `Lesson_QA_Details`, `Slack_Delivery`, `Learners`, `Lesson_Submissions`, `Queue`.
+---
 
-Run `menuEnsureTrackingColumns()` from Apps Script once.
+## Step 1: Prepare your Google Sheet
 
-## 2) Apps Script properties
+Create one Google Sheet file that will store bot data.
 
-Required:
+Create these tabs (sheet names):
 
-- `SHEETS_ID`
-- `SLACK_BOT_TOKEN`
-- `SLACK_SIGNING_SECRET`
+- `Courses`
+- `Modules`
+- `Course_Module_Map`
+- `Lessons`
+- `Missions`
+- `Lesson_Metrics`
+- `Lesson_QA_Details`
+- `Slack_Delivery`
+- `Learners`
+- `Lesson_Submissions`
+- `Queue`
 
-Recommended:
+If your project includes menu helpers, run `menuEnsureTrackingColumns()` once.
+
+---
+
+## Step 2: Set Apps Script properties
+
+In Google Apps Script:
+
+1. Open **Project Settings**.
+2. Find **Script properties**.
+3. Add these required keys:
+
+- `SHEETS_ID` = your Google Sheet ID
+- `SLACK_BOT_TOKEN` = bot token from Slack
+- `SLACK_SIGNING_SECRET` = signing secret from Slack app Basic Info
+
+Recommended keys:
 
 - `ADMIN_USER_IDS`
-- `SLACK_AUTH_TOKEN_FALLBACK` (**must be** `false`; verification-token fallback is disabled)
+- `SLACK_AUTH_TOKEN_FALLBACK` = `false`
 - `DEFAULT_LESSON_CHANNEL`
 - `DEFAULT_ONBOARDING_CHANNEL`
-- `ONBOARDING_SHEET_NAME`
-- `QUEUE_MAX_RETRIES` (default `3`)
-- `QUEUE_RETENTION_DAYS` (default `7`)
-- `QUEUE_MAX_ROWS` (default `5000`)
-- `QUEUE_PRUNE_INTERVAL_MS` (default `3600000`)
 
-## 3) Slack app
+---
 
-- Request URLs (events/interactivity/commands) -> Web app URL
-- Bot scopes: `chat:write`, `commands`, `users:read`, `users:read.email`, `im:read`, `im:write`, `reactions:read`, `channels:history`, `app_mentions:read`
-- Event Subscriptions: enable and set request URL to the web app URL
-- Events: `message.channels`, `message.im` (plus `app_mention`, `reaction_added` if used)
-- Interactivity: enable and set request URL to the web app URL for onboarding/LMS callbacks
+## Step 3: Deploy Apps Script as Web App
 
-## 4) Verification
+1. Click **Deploy** → **New deployment** (or Manage deployments).
+2. Choose **Web app**.
+3. Set access as needed for your organization.
+4. Deploy and copy the Web App URL.
 
-- `/submit` format is now: `/submit <submit_code> <evidence>`
-- Lessons are sent from `Slack_Delivery`
-- Lesson delivery requires QA pass+ready row in `Lesson_QA_Details`
-- Reaction completion resolves lesson via `Slack_Delivery` by `Slack Channel` + `Slack TS`
+You will paste this URL into Slack in the next step.
 
+---
 
-## 5) Slack request signing requirements
+## Step 4: Configure your Slack app
 
-All inbound Slack requests are validated with HMAC signing using:
+In Slack app settings:
 
-- `X-Slack-Signature`
-- `X-Slack-Request-Timestamp`
-- raw request body
+1. **Event Subscriptions** → Enable.
+2. Paste the Web App URL as Request URL.
+3. **Interactivity & Shortcuts** → Enable and paste the same URL.
+4. **Slash Commands** → each command should use the same URL.
 
-Replay protection rejects timestamps outside a 5-minute window before signature comparison. Ensure `SLACK_SIGNING_SECRET` is configured and keep `SLACK_AUTH_TOKEN_FALLBACK=false`.
+Required bot scopes usually include:
 
+- `chat:write`
+- `commands`
+- `users:read`
+- `users:read.email`
+- `im:read`
+- `im:write`
+- `reactions:read`
+- `channels:history`
+- `app_mentions:read`
 
-## 6) Release parity checklist
+Subscribe to needed bot events:
 
-Before production deploy, validate command/event parity and docs syntax:
+- `message.channels`
+- `message.im`
+- optional: `app_mention`, `reaction_added`
 
-- Manifest slash commands equal implemented slash handlers in `routeCommand` (`Code.gs`).
-- Manifest bot events equal implemented event handlers in `routeEvent` (`Code.gs`) for: `app_mention`, `message.channels`/`message.im`, `reaction_added`.
-- Docs examples use live syntax, especially `/submit <submit_code> <evidence>`.
-- Run: `python scripts/verify_manifest_docs_parity.py` and require PASS.
+---
 
+## Step 5: Verify Slack URL
+
+If Slack shows “URL isn’t verified”:
+
+1. Confirm `SLACK_SIGNING_SECRET` is correct (not client secret, not verification token).
+2. Confirm the URL in Slack exactly matches your latest deployed Web App URL.
+3. Confirm you deployed a **new version** after latest code updates.
+4. Try verification again.
+
+---
+
+## Step 6: Test in Slack
+
+Try these commands:
+
+- `/help`
+- `/learn`
+- `/submit <submit_code> <evidence>`
+- `/progress`
+
+Admin tests:
+
+- `/onboard <userId>`
+- `/report`
+
+---
+
+## Step 7: Every time you change code
+
+Do this every time, even for small edits:
+
+1. Save code.
+2. Deploy → Manage deployments.
+3. Edit deployment.
+4. Select **New version**.
+5. Deploy.
+
+If you skip this, Slack keeps calling old code.
+
+---
+
+## Quick troubleshooting
+
+### Error: `{"error":"Invalid signature"}`
+
+- Re-check `SLACK_SIGNING_SECRET`.
+- Make sure Slack is calling the correct URL.
+- Redeploy as a new version.
+- Retry.
+
+### Error: Slack says request URL not verified
+
+- Same checks as above.
+- Also make sure Event Subscriptions is enabled.
+
+### Bot not responding to commands
+
+- Ensure slash command URL matches your current Web App URL.
+- Confirm bot token and scopes are set.
+- Reinstall app to workspace if you changed scopes.
