@@ -123,6 +123,25 @@ function getHeaderValue(e, keys) {
   keys.forEach(function(k) {
     variants.push(k, k.toLowerCase(), k.toUpperCase(), 'HTTP_' + k.toUpperCase().replace(/-/g, '_'));
   });
+
+  // Web Apps can expose headers under e.headers with provider-specific casing.
+  if (e.headers) {
+    for (let i = 0; i < variants.length; i++) {
+      const key = variants[i];
+      if (e.headers[key]) return e.headers[key];
+    }
+
+    // Final fallback: case-insensitive lookup across all provided header keys.
+    const normalized = {};
+    Object.keys(e.headers).forEach(function(k) {
+      normalized[String(k || '').toLowerCase()] = e.headers[k];
+    });
+    for (let i = 0; i < keys.length; i++) {
+      const value = normalized[String(keys[i]).toLowerCase()];
+      if (value) return value;
+    }
+  }
+
   for (let i = 0; i < variants.length; i++) {
     const key = variants[i];
     if (e.parameter && e.parameter[key]) return e.parameter[key];
